@@ -1,0 +1,13 @@
+{
+  "name": "Before They Grow",
+  "short_name": "Before They Grow",
+  "description": "Capture one small answer in your child's real voice before bedtime.",
+  "start_url": "/app",
+  "display": "standalone",
+  "background_color": "#f7f5f0",
+  "theme_color": "#f04e3e",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
