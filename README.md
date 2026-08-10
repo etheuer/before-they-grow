@@ -73,6 +73,7 @@ The current product deliberately has no application backend. Saved family conten
 - [`docs/VALIDATION.md`](docs/VALIDATION.md) labels observed evidence, assumptions, source heuristics, and blocked revenue claims.
 - [`docs/VERIFICATION.md`](docs/VERIFICATION.md) records local, CI, accessibility, performance, browser, and production-deployment evidence.
 - [`docs/PRD.md`](docs/PRD.md) contains implementation-ready requirements and a requirement-by-requirement gap analysis.
+- [`docs/UX_REDESIGN_SPEC.md`](docs/UX_REDESIGN_SPEC.md) contains evidence-based parent-app UX research and the AI-agent-ready redesign contract.
 - [`RELEASE_READINESS.md`](RELEASE_READINESS.md) separates verified code and deployment from still-open device, legal, security, recovery, monetization, and App Store gates.
 - [`marketing/LAUNCH_KIT.md`](marketing/LAUNCH_KIT.md) contains App Store copy, privacy-safe content scripts, creator terms, and kill/scale rules.
 - [`marketing/CONTENT_CALENDAR.csv`](marketing/CONTENT_CALENDAR.csv) schedules a 14-day, three-post-per-day organic test.
