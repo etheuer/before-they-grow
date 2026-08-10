@@ -14,7 +14,11 @@ A mobile-first, local-first family voice journal: one age-aware question, one sm
 - Installable PWA build with offline precache.
 - Public marketing, privacy, and terms pages.
 
-This is a verified prototype, not a shipped commercial product. It has no cloud backup, accounts, billing, analytics, native App Store package, or production deployment.
+This is a publicly deployed, verified prototype—not a commercially approved product. It has no cloud backup, accounts, billing, analytics, or native App Store package. Family data remains in the browser that created it.
+
+## Live prototype
+
+**Vercel:** https://before-they-grow.vercel.app
 
 ## Run locally
 
@@ -65,9 +69,9 @@ The current product deliberately has no application backend. Family content stay
 ## Product evidence
 
 - [`docs/VALIDATION.md`](docs/VALIDATION.md) labels observed evidence, assumptions, source heuristics, and blocked revenue claims.
-- [`docs/VERIFICATION.md`](docs/VERIFICATION.md) records local test, accessibility, performance, and browser evidence.
+- [`docs/VERIFICATION.md`](docs/VERIFICATION.md) records local, CI, accessibility, performance, browser, and production-deployment evidence.
 - [`docs/PRD.md`](docs/PRD.md) contains implementation-ready requirements and a requirement-by-requirement gap analysis.
-- [`RELEASE_READINESS.md`](RELEASE_READINESS.md) separates verified code from deployment, device, legal, security, recovery, monetization, and App Store gates.
+- [`RELEASE_READINESS.md`](RELEASE_READINESS.md) separates verified code and deployment from still-open device, legal, security, recovery, monetization, and App Store gates.
 - [`marketing/LAUNCH_KIT.md`](marketing/LAUNCH_KIT.md) contains App Store copy, privacy-safe content scripts, creator terms, and kill/scale rules.
 - [`marketing/CONTENT_CALENDAR.csv`](marketing/CONTENT_CALENDAR.csv) schedules a 14-day, three-post-per-day organic test.
 

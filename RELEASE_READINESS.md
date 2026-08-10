@@ -2,7 +2,7 @@
 
 **Release candidate:** 0.1.0  
 **Updated:** 2026-08-10  
-**Decision:** Code is locally verified. External beta, deployment, legal, recovery, and App Store gates remain open. This product is not shipped.
+**Decision:** The reviewed prototype is publicly deployed and its production routes, PWA assets, and local-first critical journey are verified. External beta, legal, recovery, real-device, and App Store gates remain open; this is not a commercially approved launch.
 
 Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or blocked outside the repository.
 
@@ -32,10 +32,12 @@ Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or bloc
 
 ## B. Deployment gates
 
-- [ ] Production hosting target selected.
-- [ ] HTTPS deployment created and URL recorded.
-- [ ] SPA fallback verified for `/app`, `/privacy`, and `/terms` on the deployed host.
-- [ ] PWA installation verified from the production URL.
+- [x] Vercel project `et-projects/before-they-grow` selected and linked.
+- [x] HTTPS production deployment is live at `https://before-they-grow.vercel.app`.
+- [x] SPA fallback returns rendered application pages for `/app`, `/app/memories`, `/app/settings`, `/privacy`, and `/terms` on the deployed host.
+- [x] Production manifest, icons, service worker, JavaScript, and CSS return expected MIME types; the service worker activates at root scope.
+- [x] Production browser smoke completed onboarding, save, timeline, portable export, and two-step deletion without page errors.
+- [ ] PWA installation verified from a physical device using the production URL.
 - [ ] Service-worker update and rollback behavior verified.
 - [ ] Error monitoring selected and privacy reviewed.
 - [ ] Uptime check and alert destination configured.

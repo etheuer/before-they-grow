@@ -1,10 +1,10 @@
-# Local Verification Evidence
+# Verification Evidence
 
-**Candidate:** 0.1.0 staged tree  
-**Run:** 2026-08-10T16:51:19Z  
-**Environment:** Local Linux host, production Vite preview, Playwright Chromium
+**Candidate:** 0.1.0  
+**Latest run:** 2026-08-10T17:13:09Z  
+**Environment:** Local Linux host, GitHub Actions, Vercel production, Playwright Chromium
 
-This evidence approves repository-controlled behavior only. It is not production-hosting, real-device, legal, App Store, or commercial-launch evidence.
+This evidence covers repository-controlled behavior and the public Vercel prototype. It is not real-device, legal, App Store, recovery-drill, or commercial-launch approval.
 
 ## Automated quality gates
 
@@ -12,6 +12,7 @@ This evidence approves repository-controlled behavior only. It is not production
 |---|---|---|
 | Lint, unit/integration tests, production build | `npm run check` | PASS: 5 test files, 24 tests, including microphone cleanup and visible recovery for profile, memory, timeline, export, and deletion storage failures; Vite production build and PWA service worker generated |
 | Browser journey | `npm run test:e2e` | PASS: manifest discovery plus desktop and Pixel 7 journeys; 5 passed, 1 desktop-only duplicate mobile check skipped by design |
+| Remote CI | GitHub Actions run `31412302887` | PASS: `quality` and `browser` jobs completed successfully for the reviewed production-code commit |
 | Dependency audit | `npm audit --audit-level=high` | PASS: 0 known vulnerabilities |
 | Staged secret/dangerous-pattern scan | `search_files` over source/config patterns | PASS: 0 visible-repository matches |
 
@@ -51,6 +52,18 @@ These are local loopback observations, not claims about cold starts, CDN behavio
 - Pixel 7 Playwright coverage asserts that document width does not exceed viewport width on the landing page and onboarding.
 - The end-to-end journey verifies onboarding, typed save, timeline rendering, and downloadable export in desktop and mobile Chromium.
 
+## Production deployment
+
+- **Stable URL:** `https://before-they-grow.vercel.app`
+- **Vercel project:** `et-projects/before-they-grow`
+- **Deployment ID:** `dpl_4daohoSqpjfPJxG2W7H33S7vnaUu`
+- **Provider state:** `Ready`, target `production`
+- Direct navigation rendered `/`, `/app`, `/app/memories`, `/app/settings`, `/privacy`, and `/terms` with HTTP 200.
+- The manifest, icons, service worker, hashed JavaScript, and CSS returned expected content types from the stable alias.
+- The production service worker activated at root scope.
+- A fresh-browser journey completed onboarding, IndexedDB save, timeline rendering, versioned JSON export, and confirmed deletion, returning to onboarding with no page errors.
+- Visual inspection confirmed the intended styled marketing page—not an authentication interstitial, stale design, or unstyled/error response.
+
 ## Still external or manual
 
-See `RELEASE_READINESS.md`. Real iPhone Safari and Android Chrome microphone checks, production deployment, screen-reader testing, legal approval, support ownership, recovery, user validation, billing, and App Store review remain open.
+See `RELEASE_READINESS.md`. Real iPhone Safari and Android Chrome microphone checks, physical-device PWA installation, screen-reader testing, legal approval, support ownership, rollback/recovery drills, user validation, billing, and App Store review remain open.
