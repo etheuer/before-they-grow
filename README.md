@@ -5,16 +5,18 @@ A mobile-first, local-first family voice journal: one age-aware question, one sm
 ## What works
 
 - Age-aware daily prompts for ages 3–5, 6–8, and 9–12.
-- Voice recording through the browser MediaRecorder API.
-- Typed-answer fallback when a microphone is unavailable.
-- IndexedDB persistence for profiles, text, and audio.
+- Voice-first capture through the browser MediaRecorder API.
+- Automatic browser speech recognition when supported.
+- Parent-editable transcript review before saving.
+- Manual transcript recovery when recording or speech recognition is unavailable.
+- IndexedDB persistence for profiles, parent-reviewed transcripts, and audio.
 - Dated memory timeline with audio playback.
 - Versioned JSON export with embedded Base64 audio.
 - Two-step permanent deletion.
 - Installable PWA build with offline precache.
 - Public marketing, privacy, and terms pages.
 
-This is a publicly deployed, verified prototype—not a commercially approved product. It has no cloud backup, accounts, billing, analytics, or native App Store package. Family data remains in the browser that created it.
+This is a publicly deployed, verified prototype—not a commercially approved product. It has no cloud backup, accounts, billing, analytics, or native App Store package. Saved family data remains in the browser that created it. When supported, automatic transcription may use a speech service supplied by the browser; processing may occur on-device or through the browser provider.
 
 ## Live prototype
 
@@ -43,13 +45,13 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-The automated suite covers prompt rotation, IndexedDB persistence, audio capture, portable export, onboarding, text and voice saves, timeline rendering, deletion, legal routes, the desktop journey, and the Pixel 7 journey.
+The automated suite covers prompt rotation, IndexedDB persistence, voice capture, browser transcription, editable transcript review, portable export, onboarding, recovery paths, timeline rendering, deletion, legal routes, the desktop journey, and the Pixel 7 journey.
 
 ## Architecture
 
 ```text
 src/
-  components/AudioRecorder.tsx    MediaRecorder lifecycle
+  components/AudioRecorder.tsx    MediaRecorder and browser speech-recognition lifecycle
   data/memoryRepository.ts        IndexedDB repository
   data/portableExport.ts          Versioned JSON export
   domain/prompts.ts               Deterministic age-aware prompts
@@ -64,7 +66,7 @@ marketing/
   LAUNCH_KIT.md                   Listing and five-channel campaigns
 ```
 
-The current product deliberately has no application backend. Family content stays in the browser's IndexedDB until the user exports, deletes, or clears browser storage.
+The current product deliberately has no application backend. Saved family content stays in the browser's IndexedDB until the user exports, deletes, or clears browser storage. Automatic transcription is provided by the browser when available and can involve the browser provider's speech service.
 
 ## Product evidence
 
@@ -89,12 +91,14 @@ python scripts/generate_icons.py
 
 ## Privacy limits
 
-- No account or application server exists.
+- No account or Before They Grow application server exists.
 - No analytics or advertising SDK is installed.
 - Microphone access is requested only after a record action, and tracks are released when recording ends.
-- Local-only data is not a backup. Export important memories regularly.
+- When available, browser speech recognition may process voice on-device or through the browser provider. The operative recording screen and privacy page disclose this.
+- Saved recordings and parent-reviewed transcripts remain in IndexedDB until export or deletion.
+- Local browser storage is not a backup. Export important memories regularly.
 - The policy pages are truthful prototype drafts and still require legal review before commercial launch.
 
 ## Current release state
 
-Local tests and builds pass. Production hosting, real-device Safari and Android verification, legal approval, support operations, user validation, billing, and App Store submission remain unchecked. Do not call this product shipped until the release checklist has external evidence.
+Local checks and the current Vercel production deployment are verified. Real-device Safari and Android microphone/transcription behavior, legal approval, support operations, user validation, billing, and App Store submission remain unchecked. Do not call this product commercially shipped until the remaining release gates have external evidence.

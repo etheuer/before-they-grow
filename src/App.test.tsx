@@ -32,8 +32,35 @@ class AppFakeMediaRecorder {
   }
 }
 
+class AppFakeSpeechRecognition {
+  continuous = false
+  interimResults = false
+  lang = ''
+  onresult: ((event: { results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }> }) => void) | null = null
+  onend: (() => void) | null = null
+  onerror: (() => void) | null = null
+
+  start() {}
+
+  stop() {
+    this.onresult?.({
+      results: Object.assign(
+        [{ 0: { transcript: 'I learned how to wistle.' }, isFinal: true }],
+        { item: () => null },
+      ),
+    })
+    this.onend?.()
+  }
+
+  abort() {
+    this.onend?.()
+  }
+}
+
 const originalMediaRecorder = globalThis.MediaRecorder
 const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices')
+const originalSpeechRecognition = Object.getOwnPropertyDescriptor(globalThis, 'SpeechRecognition')
+const originalWebkitSpeechRecognition = Object.getOwnPropertyDescriptor(globalThis, 'webkitSpeechRecognition')
 
 afterEach(() => {
   Object.defineProperty(globalThis, 'MediaRecorder', {
@@ -44,6 +71,16 @@ afterEach(() => {
     Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices)
   } else {
     Reflect.deleteProperty(navigator, 'mediaDevices')
+  }
+  if (originalSpeechRecognition) {
+    Object.defineProperty(globalThis, 'SpeechRecognition', originalSpeechRecognition)
+  } else {
+    Reflect.deleteProperty(globalThis, 'SpeechRecognition')
+  }
+  if (originalWebkitSpeechRecognition) {
+    Object.defineProperty(globalThis, 'webkitSpeechRecognition', originalWebkitSpeechRecognition)
+  } else {
+    Reflect.deleteProperty(globalThis, 'webkitSpeechRecognition')
   }
   vi.restoreAllMocks()
 })
@@ -119,8 +156,24 @@ describe('Before They Grow journey', () => {
     ).toBeInTheDocument()
   })
 
-  it('saves a typed answer to the child timeline', async () => {
+  it('reveals an editable generated transcript only after voice recording', async () => {
     const user = userEvent.setup()
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => ({
+          getTracks: () => [{ stop: vi.fn() }],
+        })),
+      },
+    })
+    Object.defineProperty(globalThis, 'MediaRecorder', {
+      configurable: true,
+      value: AppFakeMediaRecorder,
+    })
+    Object.defineProperty(globalThis, 'SpeechRecognition', {
+      configurable: true,
+      value: AppFakeSpeechRecognition,
+    })
     const { repository, memories } = createFakeRepository({
       childName: 'Milo',
       ageBand: '6-8',
@@ -128,11 +181,143 @@ describe('Before They Grow journey', () => {
     })
     renderRoute('/app', repository)
 
-    const answer = await screen.findByLabelText('Add their answer in words')
-    await user.type(answer, 'I learned how to whistle.')
-    await user.click(screen.getByRole('button', { name: 'Keep this answer' }))
+    expect(await screen.findByRole('heading', { name: 'Tonight’s question' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Review the transcript')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+    await user.click(screen.getByRole('button', { name: 'Finish recording' }))
+
+    const transcript = await screen.findByLabelText('Review the transcript')
+    expect(transcript).toHaveValue('I learned how to wistle.')
+    await user.clear(transcript)
+    await user.type(transcript, 'I learned how to whistle.')
+    await user.click(screen.getByRole('button', { name: 'Save voice and transcript' }))
 
     expect(await screen.findByText('Saved to Milo’s timeline.')).toBeInTheDocument()
+    expect(memories).toHaveLength(1)
+    expect(memories[0]).toMatchObject({
+      answerText: 'I learned how to whistle.',
+      audio: expect.any(Blob),
+    })
+  })
+
+  it('preserves a completed answer when replacement microphone permission is denied', async () => {
+    const user = userEvent.setup()
+    const getUserMedia = vi
+      .fn()
+      .mockResolvedValueOnce({ getTracks: () => [{ stop: vi.fn() }] })
+      .mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'))
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    })
+    Object.defineProperty(globalThis, 'MediaRecorder', {
+      configurable: true,
+      value: AppFakeMediaRecorder,
+    })
+    Object.defineProperty(globalThis, 'SpeechRecognition', {
+      configurable: true,
+      value: AppFakeSpeechRecognition,
+    })
+    const { repository, memories } = createFakeRepository({
+      childName: 'Milo',
+      ageBand: '6-8',
+      consentedAt: '2026-08-10T19:00:00.000Z',
+    })
+    renderRoute('/app', repository)
+
+    await user.click(await screen.findByRole('button', { name: 'Record their voice' }))
+    await user.click(screen.getByRole('button', { name: 'Finish recording' }))
+    const transcript = await screen.findByLabelText('Review the transcript')
+    await user.clear(transcript)
+    await user.type(transcript, 'Parent corrected this irreplaceable answer.')
+
+    await user.click(screen.getByRole('button', { name: 'Record again' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Microphone access was not available.')
+    expect(transcript).toHaveValue('Parent corrected this irreplaceable answer.')
+    const save = screen.getByRole('button', { name: 'Save voice and transcript' })
+    expect(save).toBeEnabled()
+    await user.click(save)
+    expect(memories).toHaveLength(1)
+    expect(memories[0].answerText).toBe('Parent corrected this irreplaceable answer.')
+    expect(await memories[0].audio?.text()).toBe('family-voice')
+  })
+
+  it('keeps the prior answer when a replacement recording is empty', async () => {
+    class EmptyReplacementMediaRecorder extends AppFakeMediaRecorder {
+      static created = 0
+      readonly sequence = EmptyReplacementMediaRecorder.created++
+
+      stop() {
+        this.state = 'inactive'
+        if (this.sequence === 0) {
+          this.ondataavailable?.({
+            data: new Blob(['first-family-voice'], { type: 'audio/webm' }),
+          } as BlobEvent)
+        }
+        this.onstop?.()
+      }
+    }
+
+    const user = userEvent.setup()
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => ({
+          getTracks: () => [{ stop: vi.fn() }],
+        })),
+      },
+    })
+    Object.defineProperty(globalThis, 'MediaRecorder', {
+      configurable: true,
+      value: EmptyReplacementMediaRecorder,
+    })
+    const { repository, memories } = createFakeRepository({
+      childName: 'Milo',
+      ageBand: '6-8',
+      consentedAt: '2026-08-10T19:00:00.000Z',
+    })
+    renderRoute('/app', repository)
+
+    await user.click(await screen.findByRole('button', { name: 'Record their voice' }))
+    await user.click(screen.getByRole('button', { name: 'Finish recording' }))
+    const transcript = await screen.findByLabelText('Review the transcript')
+    await user.type(transcript, 'Keep this parent transcript.')
+
+    await user.click(screen.getByRole('button', { name: 'Record again' }))
+    await user.click(screen.getByRole('button', { name: 'Finish recording' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('No voice was captured')
+    expect(transcript).toHaveValue('Keep this parent transcript.')
+    await user.click(screen.getByRole('button', { name: 'Save voice and transcript' }))
+    expect(memories).toHaveLength(1)
+    expect(memories[0].answerText).toBe('Keep this parent transcript.')
+    expect(await memories[0].audio?.text()).toBe('first-family-voice')
+  })
+
+  it('reveals manual transcript recovery only when recording is unavailable', async () => {
+    const user = userEvent.setup()
+    Reflect.deleteProperty(navigator, 'mediaDevices')
+    Reflect.deleteProperty(globalThis, 'MediaRecorder')
+    const { repository, memories } = createFakeRepository({
+      childName: 'Milo',
+      ageBand: '6-8',
+      consentedAt: '2026-08-10T19:00:00.000Z',
+    })
+    renderRoute('/app', repository)
+
+    expect(await screen.findByRole('heading', { name: 'Tonight’s question' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Review the transcript')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Voice recording is not supported here.',
+    )
+    const transcript = screen.getByLabelText('Review the transcript')
+    await user.type(transcript, 'I learned how to whistle.')
+    await user.click(screen.getByRole('button', { name: 'Save transcript' }))
+
     expect(memories).toHaveLength(1)
     expect(memories[0]).toMatchObject({
       answerText: 'I learned how to whistle.',
@@ -165,7 +350,7 @@ describe('Before They Grow journey', () => {
       await screen.findByRole('button', { name: 'Record their voice' }),
     )
     await user.click(screen.getByRole('button', { name: 'Finish recording' }))
-    await user.click(screen.getByRole('button', { name: 'Keep this answer' }))
+    await user.click(screen.getByRole('button', { name: 'Save voice answer' }))
 
     expect(memories).toHaveLength(1)
     expect(memories[0].answerText).toBe('')
@@ -292,8 +477,20 @@ describe('Before They Grow journey', () => {
     expect(screen.getByRole('button', { name: 'Start our ritual' })).toBeEnabled()
   })
 
-  it('re-enables answer saving and preserves input when storage fails', async () => {
+  it('re-enables answer saving and preserves the recording and edited transcript when storage fails', async () => {
     const user = userEvent.setup()
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => ({
+          getTracks: () => [{ stop: vi.fn() }],
+        })),
+      },
+    })
+    Object.defineProperty(globalThis, 'MediaRecorder', {
+      configurable: true,
+      value: AppFakeMediaRecorder,
+    })
     const { repository } = createFakeRepository({
       childName: 'Milo',
       ageBand: '6-8',
@@ -304,14 +501,16 @@ describe('Before They Grow journey', () => {
     )
     renderRoute('/app', repository)
 
-    const answer = await screen.findByLabelText('Add their answer in words')
+    await user.click(await screen.findByRole('button', { name: 'Record their voice' }))
+    await user.click(screen.getByRole('button', { name: 'Finish recording' }))
+    const answer = await screen.findByLabelText('Review the transcript')
     await user.type(answer, 'Keep this exact answer.')
-    await user.click(screen.getByRole('button', { name: 'Keep this answer' }))
+    await user.click(screen.getByRole('button', { name: 'Save voice and transcript' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'We could not save this answer.',
     )
-    expect(screen.getByRole('button', { name: 'Keep this answer' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Save voice and transcript' })).toBeEnabled()
     expect(answer).toHaveValue('Keep this exact answer.')
   })
 
@@ -372,6 +571,9 @@ describe('Before They Grow journey', () => {
       screen.getByRole('heading', { name: 'Privacy, in plain language' }),
     ).toBeInTheDocument()
     expect(screen.getByText(/stored only in this browser/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/speech recognition service may process the voice while you record/i),
+    ).toBeInTheDocument()
 
     view.unmount()
     renderRoute('/terms', repository)

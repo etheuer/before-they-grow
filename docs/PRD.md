@@ -8,7 +8,7 @@
 
 ## 1. Product decision
 
-Build a private, two-minute family ritual that gives a parent one age-aware question and preserves the child's answer as text, voice, or both. The product competes on low friction, emotional specificity, local-first privacy, and unconditional export rather than on family-feed breadth.
+Build a private, two-minute family ritual that gives a parent one age-aware question, captures the child's answer as voice, and generates a transcript the parent can edit before saving. The product competes on low friction, emotional specificity, truthful privacy, and unconditional export rather than on family-feed breadth.
 
 The MVP is approved for user testing. It is not approved for paid acquisition, App Store submission, or commercial billing until the external gates in `RELEASE_READINESS.md` pass.
 
@@ -43,7 +43,7 @@ Let me know where intimate family data lives, let me remove it, and never hold e
 ### Non-goals for version 0.1
 
 - Cloud accounts, family sharing, or cross-device sync.
-- AI transcription, sentiment analysis, or generated psychological advice.
+- Sentiment analysis, generated psychological advice, or transcript interpretation.
 - Social feed, public child profiles, or discoverability.
 - Push notifications.
 - Payment processing or a functional subscription paywall.
@@ -54,8 +54,8 @@ Let me know where intimate family data lives, let me remove it, and never hold e
 
 **Category:** Private family voice journal  
 **Promise:** One question tonight. Their voice tomorrow.  
-**Proof:** An answer can be recorded or typed in two minutes, remains on the device, appears in a dated timeline, and exports with audio included.  
-**Differentiation:** Daily age-aware prompts plus the child's real voice, without requiring a family feed, cloud account, or subscription to retrieve memories.
+**Proof:** A parent records one answer, reviews and edits the browser-generated transcript, saves the original audio and reviewed text locally, and can export both.
+**Differentiation:** Daily age-aware prompts plus the child's real voice and a correctable transcript, without requiring a family feed, cloud account, or subscription to retrieve memories.
 
 ## 6. User journey
 
@@ -63,10 +63,12 @@ Let me know where intimate family data lives, let me remove it, and never hold e
 2. Parent opens the app.
 3. Parent supplies a child nickname and age band.
 4. App shows one deterministic age-aware question and one follow-up.
-5. Parent records audio, types the answer, or does both.
-6. Parent saves the answer.
-7. Parent revisits entries in the timeline.
-8. Parent exports all data or deletes all local data from Settings.
+5. Parent records the child's voice.
+6. When browser speech recognition is available, the app generates a transcript while recording.
+7. The reviewed transcript field appears after recording; the parent corrects any words or enters text manually if transcription is unavailable.
+8. Parent saves the original voice recording and parent-reviewed transcript.
+9. Parent revisits entries in the timeline.
+10. Parent exports all data or deletes all local data from Settings.
 
 ## 7. Information architecture
 
@@ -76,7 +78,7 @@ Let me know where intimate family data lives, let me remove it, and never hold e
 | `/app` | Onboarding or tonight's question |
 | `/app/memories` | Dated private memory timeline |
 | `/app/settings` | Data export, local-storage explanation, deletion |
-| `/privacy` | Truthful local-first privacy notice |
+| `/privacy` | Truthful saved-memory storage and browser speech-processing notice |
 | `/terms` | Prototype terms and limitations |
 
 ## 8. Data model
@@ -96,15 +98,16 @@ Let me know where intimate family data lives, let me remove it, and never hold e
 | `id` | UUID string | Unique in the local database |
 | `promptId` | string | Stable prompt identifier |
 | `question` | string | Stored with the answer so later prompt edits do not rewrite history |
-| `answerText` | string | May be empty only when audio exists |
-| `audio` | Blob or null | Browser-produced audio recording |
+| `answerText` | string | Parent-reviewed transcript; may be empty only when audio exists |
+| `audio` | Blob or null | Original browser-produced voice recording; null only for the explicit recording-failure recovery path |
 | `recordedAt` | ISO timestamp | Save time |
 
 ### Storage
 
 - IndexedDB database: `before-they-grow`.
 - Object stores: `profiles`, `memories`.
-- No server or third-party analytics in version 0.1.
+- No Before They Grow server or third-party analytics in version 0.1.
+- Automatic transcription uses browser speech recognition when available. Depending on the browser and device, speech may be processed on-device or by the browser provider; the operative screen and privacy notice disclose this.
 - Export format version: `1`.
 
 ## 9. Functional acceptance criteria
@@ -130,7 +133,8 @@ Feature: Family setup
     When the parent opens "/app"
     Then the app asks for a child first name or nickname
     And the app offers exactly the age bands 3 to 5, 6 to 8, and 9 to 12
-    And the app says answers stay on this device and remain exportable
+    And the app explains that saved memories stay on this device
+    And the app discloses that automatic transcripts may use the browser's speech service
     When the parent submits a non-empty nickname and an age band
     Then the profile is stored locally with a consent timestamp
     And the app shows tonight's question
@@ -168,45 +172,79 @@ Feature: Age-aware daily question
     Then a different prompt identifier is returned
 ```
 
-### R-04 Voice capture
+### R-04 Voice capture and editable transcript
 
 ```gherkin
-Feature: Voice answer
-  Scenario: Microphone permission is granted
-    Given MediaRecorder and microphone access are available
+Feature: Voice-first answer with transcript review
+  Scenario: Recording and browser transcription succeed
+    Given MediaRecorder, microphone access, and browser speech recognition are available
+    And no transcript field is visible before recording
     When the parent chooses "Record their voice"
     Then the app requests audio-only microphone access
-    And the parent can finish recording
-    And the microphone tracks are stopped
-    And the audio Blob is ready to save
+    And speech recognition listens while recording
+    When the parent chooses "Finish recording"
+    Then the microphone tracks are stopped
+    And the original audio Blob is ready to save
+    And the generated words appear in a field labeled "Review the transcript"
+    And the parent can change any transcript text before saving
+
+  Scenario: Browser transcription is unavailable or hears no words
+    Given audio recording succeeds
+    And browser speech recognition is unsupported, fails, or returns no transcript
+    When recording finishes
+    Then the original audio remains ready to save
+    And an empty editable transcript field appears
+    And the app explains that the parent can type the transcript manually or save audio without text
 
   Scenario: Recording is unsupported or denied
     Given microphone recording cannot start
     When the parent tries to record
     Then the app explains that microphone access was unavailable
-    And the typed-answer path remains usable
+    And an editable recovery transcript field appears
+    And the parent can save non-empty manual text without audio
+
+  Scenario: A replacement microphone request is still pending
+    Given one completed recording and transcript exist
+    When the parent chooses "Record again"
+    And the replacement microphone permission has not resolved
+    Then the completed answer is not discarded
+
+  Scenario: Permission resolves after the screen closes
+    Given microphone permission is pending
+    When the recording UI unmounts before permission resolves
+    Then any late stream is stopped
+    And no recorder or speech recognition session starts
 ```
 
 ### R-05 Saving an answer
 
 ```gherkin
 Feature: Preserve an answer
-  Scenario: Save text only
-    Given the daily question is visible
-    When the parent enters non-empty answer text and saves
-    Then one MemoryEntry is stored with that text and no audio
+  Scenario: Save voice with a corrected transcript
+    Given a completed audio recording exists
+    And automatic transcription produced "I saw a rain bow"
+    When the parent changes the transcript to "I saw a rainbow"
+    And selects "Save voice and transcript"
+    Then one MemoryEntry is stored with the original audio Blob
+    And answerText equals "I saw a rainbow"
     And a saved confirmation names the child
 
-  Scenario: Save audio only
+  Scenario: Save audio when transcription is empty
     Given a completed audio recording exists
-    And the typed answer is empty
-    When the parent saves
-    Then one MemoryEntry is stored with the audio Blob
+    And the reviewed transcript is empty
+    When the parent selects "Save voice answer"
+    Then one MemoryEntry is stored with the audio Blob and empty answerText
 
-  Scenario: Reject an empty memory
-    Given no audio exists
-    And the typed answer is empty
-    Then "Keep this answer" is disabled
+  Scenario: Save manual recovery text when recording failed
+    Given recording was unavailable
+    And the parent entered non-empty recovery transcript text
+    When the parent selects "Save transcript"
+    Then one MemoryEntry is stored with that text and no audio
+
+  Scenario: Reject an empty recovery memory
+    Given recording was unavailable
+    And the recovery transcript is empty
+    Then "Save transcript" is disabled
 ```
 
 ### R-06 Timeline
@@ -218,7 +256,7 @@ Feature: Memory timeline
     When the parent opens "/app/memories"
     Then entries are ordered by recordedAt descending
     And each entry shows its date and original question
-    And typed text is displayed as a quotation
+    And the parent-reviewed transcript is displayed as a quotation
     And saved audio has browser playback controls
 
   Scenario: No memories exist
@@ -263,7 +301,8 @@ Feature: Delete local data
 Feature: Truthful policy pages
   Scenario: Read the privacy notice
     When a visitor opens "/privacy"
-    Then the page states that data is stored only in this browser
+    Then the page states that saved memories are stored only in this browser
+    And it explains that browser speech recognition may process voice on-device or through the browser provider
     And it explains microphone access, export, deletion, and child use
 
   Scenario: Read the terms
@@ -293,10 +332,10 @@ Feature: Progressive web app
 | Attribute | Requirement |
 |---|---|
 | Accessibility | Keyboard focus is visible; form controls have labels; status and error messages use semantic roles; reduced-motion preference is respected. |
-| Performance | Static production bundle; no backend round trips for the core journey. |
-| Privacy | No network transmission of family content in version 0.1. |
-| Reliability | Text and audio persist through IndexedDB; export is independently readable JSON. |
-| Portability | Chrome, Edge, Safari, and Firefox are intended targets; microphone support depends on each browser and secure context. |
+| Performance | Static production bundle with no Before They Grow backend; browser speech-service latency is provider and network dependent. |
+| Privacy | Saved memories are not sent to a Before They Grow server; browser speech recognition processing is disclosed before recording and in the privacy notice. |
+| Reliability | Original audio and the parent-reviewed transcript persist through IndexedDB; transcription failure never discards a completed recording; export is independently readable JSON. |
+| Portability | Chrome, Edge, Safari, and Firefox are intended targets; microphone and speech-recognition support depend on each browser, device, language, network, and secure context. |
 | Responsive design | No horizontal overflow at desktop or Pixel 7 viewport in Playwright. |
 
 ## 11. Monetization hypothesis, not implementation
@@ -332,12 +371,12 @@ Guardrails: export success, deletion success, microphone denial recovery, week-o
 | R-01 Marketing comprehension | Implemented | Landing-page test and browser visual QA | Message testing with real parents | P1 |
 | R-02 Onboarding | Implemented | React and Playwright tests | Multiple children excluded | P2 |
 | R-03 Daily prompt | Implemented | Five prompt-domain tests | Prompt quality not expert reviewed | P1 |
-| R-04 Voice capture | Implemented | MediaRecorder test verifies Blob and track release | Real iOS Safari device test | P0 before external beta |
-| R-05 Save answer | Implemented | Text and audio integration tests | Duplicate same-day answer policy undefined | P2 |
+| R-04 Voice capture and editable transcript | Implemented | MediaRecorder and speech-recognition lifecycle tests plus desktop/mobile E2E edit-and-save journey | Real iOS Safari and Android browser transcription tests; provider processing behavior validation | P0 before external beta |
+| R-05 Save answer | Implemented | Integration tests preserve original audio, parent edits, empty-transcript audio, and storage-error retry | Duplicate same-day answer policy undefined | P2 |
 | R-06 Timeline | Implemented | Timeline integration and E2E tests | Search and editing excluded | P2 |
 | R-07 Export | Implemented | Base64 export unit test and browser download E2E | Large export stress test | P1 |
 | R-08 Deletion | Implemented | Two-step deletion integration test | Browser data-clearing education only | P2 |
-| R-09 Policies | Implemented as truthful drafts | Route test | Legal review and public support contact | P0 before commercial launch |
+| R-09 Policies | Implemented as truthful drafts | Route test covers local storage and browser speech-provider disclosure | Legal review, browser-provider review, and public support contact | P0 before commercial launch |
 | R-10 PWA | Implemented | Build output and mobile E2E | Native App Store package not built | P0 before App Store submission |
 | Billing | Not implemented by design | Documented gate | Validate price, then integrate provider | P1 after interviews |
 | Cloud recovery | Not implemented by design | Local-first architecture | Decide if encrypted sync is worth privacy cost | P2 |
@@ -348,13 +387,13 @@ Guardrails: export success, deletion success, microphone denial recovery, week-o
 
 - All local automated checks pass.
 - A real iPhone Safari test confirms recording, persistence, playback, export, and deletion.
-- Each participant is told this is local-only and not a backup service.
+- Each participant is told that saved memories remain in local browser storage, that this is not a backup service, and that automatic transcription may use the browser provider’s speech service.
 
 ### Proceed to a public web beta when
 
 - At least 6 of 10 parents complete the first memory without help.
 - At least 4 of 10 return and save three memories inside seven days.
-- No participant misunderstands where audio is stored.
+- No participant misunderstands where saved audio and transcripts are stored or where speech recognition may be processed.
 - Terms, privacy, support, monitoring, deployment, and recovery gates pass.
 
 ### Proceed to monetization tests when

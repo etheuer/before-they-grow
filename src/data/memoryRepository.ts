@@ -40,16 +40,27 @@ export type MemoryRepository = {
 export function createMemoryRepository(
   databaseName = 'before-they-grow',
 ): MemoryRepository {
-  const database = openDB<BeforeTheyGrowDatabase>(databaseName, 1, {
-    upgrade(db) {
-      db.createObjectStore('profiles')
-      const memories = db.createObjectStore('memories', { keyPath: 'id' })
-      memories.createIndex('by-recorded-at', 'recordedAt')
-    },
-  })
+  let database: Promise<IDBPDatabase<BeforeTheyGrowDatabase>> | null = null
 
-  async function getDatabase(): Promise<IDBPDatabase<BeforeTheyGrowDatabase>> {
-    return database
+  function getDatabase(): Promise<IDBPDatabase<BeforeTheyGrowDatabase>> {
+    if (database) return database
+
+    try {
+      const pendingDatabase = openDB<BeforeTheyGrowDatabase>(databaseName, 1, {
+        upgrade(db) {
+          db.createObjectStore('profiles')
+          const memories = db.createObjectStore('memories', { keyPath: 'id' })
+          memories.createIndex('by-recorded-at', 'recordedAt')
+        },
+      })
+      database = pendingDatabase
+      void pendingDatabase.catch(() => {
+        if (database === pendingDatabase) database = null
+      })
+      return pendingDatabase
+    } catch (error) {
+      return Promise.reject(error)
+    }
   }
 
   return {
@@ -85,7 +96,13 @@ export function createMemoryRepository(
     },
 
     close() {
-      void database.then((db) => db.close())
+      const pendingDatabase = database
+      database = null
+      if (pendingDatabase) {
+        void pendingDatabase.then((db) => db.close()).catch(() => {
+          // A failed open has no database handle to close.
+        })
+      }
     },
   }
 }

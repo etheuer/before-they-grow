@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryRepository, type MemoryRepository } from './memoryRepository'
 
 let repository: MemoryRepository
@@ -8,11 +8,48 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await repository.deleteAll()
   repository.close()
 })
 
 describe('memory repository', () => {
+  it('defers IndexedDB access so synchronous open failures reject instead of crashing creation', async () => {
+    const open = vi.spyOn(indexedDB, 'open').mockImplementationOnce(() => {
+      throw new DOMException('Access to IndexedDB is denied', 'SecurityError')
+    })
+
+    let recoveringRepository: MemoryRepository | undefined
+    expect(() => {
+      recoveringRepository = createMemoryRepository(`denied-${crypto.randomUUID()}`)
+    }).not.toThrow()
+
+    await expect(recoveringRepository!.getProfile()).rejects.toMatchObject({
+      name: 'SecurityError',
+    })
+    open.mockRestore()
+  })
+
+  it('retries opening IndexedDB after a synchronous access failure', async () => {
+    const databaseName = `retry-${crypto.randomUUID()}`
+    const actualOpen = indexedDB.open.bind(indexedDB)
+    const open = vi.spyOn(indexedDB, 'open')
+      .mockImplementationOnce(() => {
+        throw new DOMException('Access to IndexedDB is denied', 'SecurityError')
+      })
+      .mockImplementation((name, version) => actualOpen(name, version))
+    const recoveringRepository = createMemoryRepository(databaseName)
+
+    await expect(recoveringRepository.getProfile()).rejects.toMatchObject({
+      name: 'SecurityError',
+    })
+    await expect(recoveringRepository.getProfile()).resolves.toBeNull()
+
+    await recoveringRepository.deleteAll()
+    recoveringRepository.close()
+    open.mockRestore()
+  })
+
   it('persists the family profile', async () => {
     expect(await repository.getProfile()).toBeNull()
 

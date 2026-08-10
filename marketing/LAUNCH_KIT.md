@@ -17,9 +17,10 @@ Capture the funny, thoughtful answers you will wish you could hear again.
 ### Proof points
 
 - One prompt per day, selected for the child’s age band.
-- Voice-first with a text fallback.
-- No account, cloud upload, ad network, or social feed in this prototype.
+- One voice-recording action followed by a browser-generated, parent-editable transcript.
+- No account, Before They Grow cloud storage, ad network, or social feed in this prototype.
 - Local IndexedDB storage, explicit deletion, and portable JSON export with embedded audio.
+- Browser speech recognition may process voice on-device or through the browser provider; every campaign must preserve that disclosure.
 
 ### What not to claim
 
@@ -36,7 +37,7 @@ Do not claim:
 1. **Emotional job:** Hear who they were, not only remember what they looked like.
 2. **Behavioral promise:** One good question and one small answer tonight.
 3. **Objection handling:** No long journal and no pressure to be profound.
-4. **Trust proof:** The prototype keeps answers on this device and supports export and deletion.
+4. **Trust proof:** Saved memories remain in this browser and support export and deletion; browser speech processing is disclosed.
 5. **Action:** Try tonight’s question.
 
 ## 3. Landing-page copy bank
@@ -76,7 +77,7 @@ Ask one age-aware question, capture the answer in your child’s voice or as tex
 
 Childhood does not disappear all at once. It changes in the small answers.
 
-Before They Grow gives your family one thoughtful, age-aware question at a time. Record the answer in your child’s real voice or type it when the room needs to stay quiet. Each answer joins a simple dated timeline you can revisit and export.
+Before They Grow gives your family one thoughtful, age-aware question at a time. Record the answer in your child’s real voice, review the automatic transcript, and correct anything the browser misheard. The original audio and your reviewed words join a simple dated timeline you can revisit and export.
 
 WHY FAMILIES USE IT
 
@@ -88,7 +89,7 @@ WHY FAMILIES USE IT
 
 PRIVATE BY DESIGN
 
-The current prototype does not require an account or upload answers to our servers. Data stays in this browser’s local storage unless you export or delete it. Clearing browser data may remove memories, so export anything important.
+The current prototype does not require an account or upload saved memories to Before They Grow servers. Recordings and reviewed transcripts stay in this browser’s local storage unless you export or delete them. Automatic transcription may use a speech service provided by your browser. Clearing browser data may remove memories, so export anything important.
 
 Ask one good question tonight. Keep a little of who they are.
 
@@ -97,9 +98,9 @@ Ask one good question tonight. Keep a little of who they are.
 ### Screenshot storyboard
 
 1. **ASK ONE GOOD QUESTION** — daily prompt screen.
-2. **KEEP THE REAL ANSWER** — voice and text choices.
+2. **KEEP THE REAL ANSWER** — original voice plus a parent-editable transcript.
 3. **WATCH THE YEARS GATHER** — dated timeline with fictional demo entries.
-4. **PRIVATE ON THIS DEVICE** — local-storage disclosure.
+4. **SAVED ON THIS DEVICE** — local saved-memory and browser speech-processing disclosure.
 5. **EXPORT ANYTIME** — settings export control.
 
 Rules: use fictional names and demo answers, label composites as demonstrations, and never place a real child’s recording or identifying information in marketing without documented guardian consent.
@@ -116,7 +117,7 @@ Each experiment runs for 14 days or until its kill threshold is met. The prototy
 
 **Script:**
 
-> I stopped asking “How was school?” because I kept getting “fine.” Tonight’s question is: “What made you laugh the most today?” Before They Grow gives us one question and lets me keep the answer in their voice. The prototype stays on this device, so I export anything important.
+> I stopped asking “How was school?” because I kept getting “fine.” Tonight’s question is: “What made you laugh the most today?” Before They Grow gives us one question, keeps the original voice, and lets me correct the browser-generated transcript. Saved memories stay in this browser; speech processing depends on the browser, and I export anything important.
 
 **Budget cap:** $300 total only after tester consent and a functioning public URL.
 
@@ -218,9 +219,9 @@ Each experiment runs for 14 days or until its kill threshold is met. The prototy
 
 **Voiceover:** “Photos show what they looked like. Their answer shows who they were.”
 
-**Product beat:** Open the prompt, record a short fictional demo answer, show saved confirmation, open the timeline.
+**Product beat:** Open the prompt, record a short fictional demo answer, review and correct the transcript, show saved confirmation, open the timeline.
 
-**Disclosure:** “Prototype shown. Demo answer. Data stays in this browser unless exported or deleted.”
+**Disclosure:** “Prototype shown. Demo answer. Saved memories stay in this browser unless exported or deleted. Automatic transcription may use your browser’s speech service.”
 
 ### Birthday ritual carousel
 
@@ -234,7 +235,7 @@ Each experiment runs for 14 days or until its kill threshold is met. The prototy
 
 > I built Before They Grow because the family moments I most want back are not polished milestones. They are ordinary answers in a child’s own voice.
 >
-> The prototype is deliberately small: one age-aware question, voice or text, a dated timeline, export, and delete. No account and no cloud sync. That also means browser data is not a backup, so anything important should be exported.
+> The prototype is deliberately small: one age-aware question, one voice recording, an editable browser-generated transcript, a dated timeline, export, and delete. No account and no Before They Grow cloud sync. Saved memories stay in browser storage, which is not a backup. Speech processing depends on the browser, and anything important should be exported.
 >
 > I’m looking for a small number of parents willing to try three questions in one week and tell me where the ritual feels awkward.
 
@@ -251,7 +252,7 @@ Use `CONTENT_CALENDAR.csv` for the complete 42-slot schedule.
 ### Days 4–7
 
 - Repeat the best hook in two formats.
-- Publish the local-first privacy explanation.
+- Publish the saved-memory storage and browser speech-processing explanation.
 - Conduct five short parent interviews.
 
 ### Days 8–10
@@ -273,7 +274,7 @@ Ask about behavior, not compliments:
 1. Tell me about the last time you wished you had recorded something your child said.
 2. What do you use today, if anything?
 3. When did this two-minute ritual fit naturally? When did it feel forced?
-4. Did you choose voice or text? Why?
+4. Did the voice-first flow and editable transcript feel natural? Where did it fail?
 5. What made you hesitate before saving?
 6. Did you come back without a reminder?
 7. What would make you export or delete everything?

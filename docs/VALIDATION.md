@@ -80,8 +80,8 @@ The Ernesto Lopez source heuristic recommends finding a few competitors above `$
 |---|---:|---:|---:|---:|
 | One age-aware question tonight | Yes | Prompt-based | Not primary | Yes |
 | Child voice recording | Core | Not observed as core | Video/photo broader | Not observed in listing |
-| Typed answer | Yes | Yes | Yes | Quote journal |
-| Local-first, no account | Yes | No | No | Listing says no data collected; implementation not audited |
+| Parent-editable text or transcript | Generated transcript plus manual recovery | Typed entry | Typed entry | Quote journal |
+| Saved memories local, no account | Yes; browser speech processing may vary | No | No | Listing says no data collected; implementation not audited |
 | Full export including audio | Yes | Export terms not evaluated | Export terms not evaluated | Export not observed in listing |
 | Broad family photo feed | No | Yes | Yes | No |
 | Two-minute ritual positioning | Yes | No | No | One-question ritual, but dinner-focused |
@@ -95,7 +95,7 @@ Before They Grow must remain visually and behaviorally original. Competitor rese
 - Multiple direct competitors validate private family-memory capture.
 - A current close competitor validates one-question family conversations and paid pricing.
 - Public parenting content validates question-based acquisition formats.
-- The product has a narrow original angle: child's voice plus local-first export.
+- The product has a narrow original angle: child's original voice plus a parent-correctable transcript and portable local export.
 - A functional MVP can be evaluated without backend or billing risk.
 
 ### Fail or blocked
@@ -114,11 +114,12 @@ Before They Grow must remain visually and behaviorally original. Competitor rese
 3. “What makes that habit break down?”
 4. Show the landing page without explanation. Ask: “What do you think this does?”
 5. Ask the parent to set up and save one answer without help.
-6. Ask: “Where do you believe this recording is stored?”
-7. Show the timeline. Ask whether voice changes the value compared with text.
-8. Show export and local-only limitations. Ask what creates or reduces trust.
-9. Ask which future capability would be worth paying for, without naming a price.
-10. Price-test `$4.99/month`, `$29.99/year`, and `$49.99 lifetime` in randomized order; record behavior, not politeness.
+6. Ask: “Where do you believe the saved recording lives, and where might transcription be processed?”
+7. Show the generated transcript and ask the parent to correct an intentional error without help.
+8. Show the timeline. Ask whether voice plus editable text changes the value compared with photos or ordinary notes.
+9. Show export and browser-storage limitations. Ask what creates or reduces trust.
+10. Ask which future capability would be worth paying for, without naming a price.
+11. Price-test `$4.99/month`, `$29.99/year`, and `$49.99 lifetime` in randomized order; record behavior, not politeness.
 
 ## 10. Decision rule
 

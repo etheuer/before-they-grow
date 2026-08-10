@@ -2,7 +2,7 @@
 
 **Release candidate:** 0.1.0  
 **Updated:** 2026-08-10  
-**Decision:** The reviewed prototype is publicly deployed and its production routes, PWA assets, and local-first critical journey are verified. External beta, legal, recovery, real-device, and App Store gates remain open; this is not a commercially approved launch.
+**Decision:** The pre-transcription prototype is publicly deployed. The voice-first editable-transcript revision is locally verified and awaits push, CI, deployment, and production smoke evidence. External beta, legal, recovery, real-device, and App Store gates remain open; this is not a commercially approved launch.
 
 Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or blocked outside the repository.
 
@@ -13,22 +13,26 @@ Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or bloc
 - [x] Unit and integration suite passes with `npm test`.
 - [x] Desktop Chromium end-to-end journey passes.
 - [x] Pixel 7 Chromium end-to-end journey passes.
-- [x] Mobile test checks horizontal overflow.
+- [x] Mobile tests check horizontal overflow and prove the transcript save control is not obscured by fixed navigation.
 - [x] PWA build emits a discoverable manifest, 192px and 512px icons, service worker, and precache.
-- [x] Text-only answer saves and appears in the timeline.
-- [x] Audio-only answer saves without requiring typed text.
-- [x] MediaRecorder tests verify tracks are released after recording and after a pending permission request outlives the UI.
+- [x] Voice-first screen hides the transcript field until recording completes or recording fails.
+- [x] Browser-generated transcript appears in an editable field and parent edits persist with the original audio.
+- [x] Audio-only answer saves when speech recognition returns no transcript.
+- [x] Manual text recovery remains available only after recording is unavailable.
+- [x] MediaRecorder and speech-recognition tests verify generated transcript delivery, recognition-constructor fallback to audio-only capture, asynchronous recorder error/stop recovery, track release, stale-session callback isolation, empty-recording rejection, recognizer abort after runtime/recorder initialization failure, late-permission cleanup, and preservation of a completed answer while replacement permission is pending or denied.
+- [x] Pending memory-save completions are guarded from updating an unmounted capture screen.
+- [x] IndexedDB bootstrap is lazy; synchronous browser storage denial renders recovery instead of a blank page, and retry creates a fresh open attempt.
 - [x] IndexedDB rejection paths restore controls and show visible recovery for profile loading/saving, timeline loading, memory saving, export, and deletion.
-- [x] IndexedDB repository tests cover profile, audio memory, ordering, and deletion.
+- [x] IndexedDB repository tests cover bootstrap failure/retry, profile, audio memory, ordering, and deletion.
 - [x] Portable export test verifies Base64 audio and versioned JSON.
-- [x] Browser E2E verifies a real export download.
+- [x] Browser E2E verifies the downloaded JSON contains the reviewed transcript and original non-empty audio.
 - [x] Deletion requires a second explicit action.
-- [x] Privacy and terms routes exist and match current local-only behavior.
+- [x] Privacy and terms routes distinguish local saved-memory storage from browser-provider speech processing.
 - [x] Desktop landing and onboarding screens received visual browser inspection.
-- [x] Automated axe scans pass WCAG 2 AA error-level checks on `/`, `/app`, `/privacy`, and `/terms`; layered preview colors were manually ratio-verified.
+- [x] Pa11y/axe passes `/app`, `/privacy`, and `/terms`; `/` passes with the layered phone preview excluded after every preview color pair was manually ratio-verified.
 - [x] Local production-preview performance and bundle observations are recorded in `docs/VERIFICATION.md`.
 - [x] No runtime secrets or credentials are required.
-- [x] `npm audit` reported zero known vulnerabilities at installation time.
+- [x] Current-candidate `npm audit --audit-level=high` reported `found 0 vulnerabilities`.
 
 ## B. Deployment gates
 
@@ -45,8 +49,8 @@ Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or bloc
 
 ## C. Real-device and compatibility gates
 
-- [ ] iPhone Safari microphone permission, recording, save, playback, export, and deletion verified.
-- [ ] Android Chrome microphone permission, recording, save, playback, export, and deletion verified.
+- [ ] iPhone Safari microphone permission, speech-recognition support or recovery, transcript editing, save, playback, export, and deletion verified.
+- [ ] Android Chrome microphone permission, speech-recognition support or recovery, transcript editing, save, playback, export, and deletion verified.
 - [ ] Browser restart persistence verified on both devices.
 - [ ] Private-browsing behavior documented.
 - [ ] Storage-quota failure behavior tested with large recordings.
@@ -55,7 +59,8 @@ Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or bloc
 
 ## D. Data protection and recovery gates
 
-- [x] Current architecture sends no family content to an application server.
+- [x] Current architecture sends no saved family content to a Before They Grow application server.
+- [x] Operative recording copy and the privacy notice disclose that browser speech recognition may process voice on-device or through the browser provider.
 - [x] User can export all stored content.
 - [x] User can permanently delete all app-managed local content.
 - [ ] Threat model reviewed by a security owner.
@@ -70,7 +75,7 @@ Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or bloc
 - [ ] Qualified legal review completed.
 - [ ] Public legal entity and contact details added.
 - [ ] Support email or support URL is live.
-- [ ] Recording-consent requirements reviewed for launch jurisdictions.
+- [ ] Recording-consent and browser speech-provider processing requirements reviewed for launch jurisdictions.
 - [ ] Child privacy and parental-consent obligations reviewed, including COPPA and applicable state or international rules.
 - [ ] Accessibility statement and support process prepared.
 - [ ] Trademark and App Store name search completed for “Before They Grow.”
@@ -81,8 +86,8 @@ Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or bloc
 - [ ] Ten target-parent interviews completed.
 - [ ] At least 6 of 10 complete first save unassisted.
 - [ ] At least 4 of 10 save three answers within seven days.
-- [ ] Participants correctly understand local-only storage.
-- [ ] Voice value exceeds or complements text/photo alternatives.
+- [ ] Participants correctly understand where saved memories remain and where browser speech recognition may be processed.
+- [ ] Voice plus editable transcript value exceeds or complements text/photo alternatives.
 - [ ] Top support and trust objections are documented.
 - [ ] Pricing fake-door test completed before billing integration.
 - [ ] Competitor revenue claims remain labeled unless independently verified.

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowRight,
   CalendarBlank,
@@ -22,6 +22,10 @@ import {
   downloadPortableExport,
 } from './data/portableExport'
 import { AudioRecorder } from './components/AudioRecorder'
+import type {
+  RecordedAnswer,
+  TranscriptStatus,
+} from './components/AudioRecorder'
 
 export type AppRoutesProps = {
   repository: MemoryRepository
@@ -63,20 +67,29 @@ function LegalPage({ type }: { type: 'privacy' | 'terms' }) {
         {isPrivacy ? (
           <>
             <p className="legal-lead">
-              Before They Grow is a local-first prototype. Your family profile, typed answers,
-              and voice recordings are stored only in this browser on this device.
+              Before They Grow is a local-first prototype. Your family profile, edited transcripts,
+              and saved voice recordings are stored only in this browser on this device. Automatic
+              transcription may use a speech service provided by your browser.
             </p>
             <h2>What the app stores</h2>
             <p>
-              The app stores the nickname, selected age range, question, answer, optional audio,
-              and recording date needed to create your timeline. This version has no account,
-              server database, advertising SDK, or analytics service.
+              The app stores the nickname, selected age range, question, parent-reviewed transcript,
+              voice recording, and recording date needed to create your timeline. This version has no
+              account, server database, advertising SDK, or analytics service.
             </p>
-            <h2>Microphone access</h2>
+            <h2>Microphone and transcription</h2>
             <p>
-              Microphone permission is requested only after you choose to record. The browser
-              provides the audio stream, and the app releases it when recording ends. Audio stays
-              in this browser unless you export it.
+              Microphone permission is requested only after you choose to record. When automatic
+              transcription is available, your browser’s speech recognition service may process the
+              voice while you record. Depending on the browser and device, processing may happen on
+              the device or through the browser provider’s servers. Before They Grow does not select,
+              receive, or control that provider’s processing. Review your browser’s privacy terms if
+              this matters to you.
+            </p>
+            <p>
+              The app releases the microphone when recording ends. The resulting recording and the
+              transcript you review are stored in this browser unless you export them. If automatic
+              transcription is unavailable, you can enter or correct the transcript manually.
             </p>
             <h2>Export and deletion</h2>
             <p>
@@ -87,8 +100,9 @@ function LegalPage({ type }: { type: 'privacy' | 'terms' }) {
             <h2>Children</h2>
             <p>
               This product is designed for a parent or guardian to operate. Children should not
-              enter personal contact information. This prototype does not transmit child data to a
-              Before They Grow server because no such server exists.
+              enter personal contact information. This prototype does not send saved memories to a
+              Before They Grow server because no such server exists. Your browser’s speech service
+              may process voice to create a transcript as described above.
             </p>
           </>
         ) : (
@@ -174,7 +188,7 @@ function MarketingPage() {
               <Microphone weight="fill" aria-hidden="true" />
               Hold to answer
             </div>
-            <p className="preview-promise">Private on this device</p>
+            <p className="preview-promise">Saved on this device</p>
           </div>
         </div>
       </section>
@@ -182,7 +196,7 @@ function MarketingPage() {
       <section className="trust-strip" aria-label="Product commitments">
         <div>
           <ShieldCheck aria-hidden="true" />
-          <span>Local-first privacy</span>
+          <span>Saved memories stay local</span>
         </div>
         <div>
           <Sparkle aria-hidden="true" />
@@ -208,7 +222,7 @@ function MarketingPage() {
           <article>
             <span>02</span>
             <h3>Listen</h3>
-            <p>Record their real voice or type the words exactly as they said them.</p>
+            <p>Record their real voice, review the automatic transcript, and correct any words.</p>
           </article>
           <article>
             <span>03</span>
@@ -390,7 +404,10 @@ function Onboarding({ now, onComplete }: OnboardingProps) {
 
         <div className="privacy-note">
           <ShieldCheck aria-hidden="true" />
-          <p>Your answers stay on this device and remain exportable.</p>
+          <p>
+            Saved memories stay on this device. Automatic transcripts may use your browser’s speech
+            service. <Link to="/privacy">Learn more</Link>.
+          </p>
         </div>
 
         {error ? <p className="inline-error" role="alert">{error}</p> : null}
@@ -562,7 +579,7 @@ function SettingsScreen({
           <div className="settings-icon"><DownloadSimple aria-hidden="true" /></div>
           <div>
             <h2>Take every memory with you</h2>
-            <p>Download a readable JSON file with typed answers and voice recordings included.</p>
+            <p>Download a readable JSON file with reviewed transcripts and voice recordings included.</p>
             <button className="button button-secondary" disabled={exporting} onClick={exportMemories} type="button">
               {exporting ? 'Preparing…' : 'Export my memories'}
             </button>
@@ -607,10 +624,53 @@ type DailyQuestionProps = {
 function DailyQuestion({ profile, repository, now }: DailyQuestionProps) {
   const [answerText, setAnswerText] = useState('')
   const [audio, setAudio] = useState<Blob | null>(null)
+  const [transcriptStatus, setTranscriptStatus] = useState<TranscriptStatus | null>(null)
+  const [captureInProgress, setCaptureInProgress] = useState(false)
+  const [replacingAnswer, setReplacingAnswer] = useState(false)
   const [saved, setSaved] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const transcriptReviewRef = useRef<HTMLTextAreaElement>(null)
+  const dailyMountedRef = useRef(true)
   const prompt = getPromptForDate(now(), profile.ageBand)
+
+  useEffect(() => {
+    dailyMountedRef.current = true
+    return () => {
+      dailyMountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (captureInProgress || transcriptStatus === null || window.innerWidth > 620) return
+    const frame = window.requestAnimationFrame(() => {
+      transcriptReviewRef.current?.scrollIntoView({ block: 'center' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [captureInProgress, transcriptStatus])
+
+  function beginRecording() {
+    setReplacingAnswer(Boolean(audio || answerText.trim()))
+    setCaptureInProgress(true)
+    setError('')
+  }
+
+  function receiveRecording(answer: RecordedAnswer) {
+    setCaptureInProgress(false)
+    setReplacingAnswer(false)
+    setAudio(answer.audio)
+    setAnswerText(answer.transcript)
+    setTranscriptStatus(answer.transcriptStatus)
+  }
+
+  function recoverWithoutRecording() {
+    setCaptureInProgress(false)
+    setReplacingAnswer(false)
+    if (audio || answerText.trim()) return
+    setAudio(null)
+    setAnswerText('')
+    setTranscriptStatus('unavailable')
+  }
 
   async function saveAnswer(event: FormEvent) {
     event.preventDefault()
@@ -627,11 +687,13 @@ function DailyQuestion({ profile, repository, now }: DailyQuestionProps) {
         audio,
         recordedAt: now().toISOString(),
       })
-      setSaved(true)
+      if (dailyMountedRef.current) setSaved(true)
     } catch {
-      setError('We could not save this answer. Your recording and text are still here so you can try again.')
+      if (dailyMountedRef.current) {
+        setError('We could not save this answer. Your recording and text are still here so you can try again.')
+      }
     } finally {
-      setSaving(false)
+      if (dailyMountedRef.current) setSaving(false)
     }
   }
 
@@ -665,25 +727,62 @@ function DailyQuestion({ profile, repository, now }: DailyQuestionProps) {
           </div>
         ) : (
           <form className="answer-form" onSubmit={saveAnswer}>
-            <AudioRecorder onRecorded={setAudio} />
-            <div className="answer-divider"><span>or write it down</span></div>
-            <label className="field">
-              <span>Add their answer in words</span>
-              <textarea
-                placeholder="Type it exactly as they said it…"
-                rows={5}
-                value={answerText}
-                onChange={(event) => setAnswerText(event.target.value)}
-              />
-            </label>
+            <AudioRecorder
+              onRecorded={receiveRecording}
+              onRecordingStarted={beginRecording}
+              onUnavailable={recoverWithoutRecording}
+            />
+            {captureInProgress ? (
+              <p className="capture-helper" role="status">
+                {replacingAnswer
+                  ? 'Recording a replacement. Your previous voice and transcript stay available unless the new recording finishes successfully.'
+                  : 'Recording now. Finish when they are done, then review the transcript.'}
+              </p>
+            ) : transcriptStatus === null ? (
+              <p className="capture-helper">
+                Record their answer first. When supported, your browser will create an editable
+                transcript. Speech processing depends on your browser and device.{' '}
+                <Link to="/privacy">Learn about privacy</Link>.
+              </p>
+            ) : (
+              <div className="transcript-review">
+                <div className="field">
+                  <label htmlFor="answer-transcript">Review the transcript</label>
+                  <small className="field-help" id="transcript-help">
+                    {transcriptStatus === 'complete'
+                      ? 'Correct anything the transcript misheard. Your original voice recording stays unchanged.'
+                      : audio
+                        ? 'Automatic transcription was not available. Type what they said, or save the voice recording without text.'
+                        : 'Voice recording was not available. You can type what they said as a recovery option.'}
+                  </small>
+                  <textarea
+                    ref={transcriptReviewRef}
+                    aria-describedby="transcript-help"
+                    id="answer-transcript"
+                    placeholder="Edit or type the transcript…"
+                    rows={5}
+                    value={answerText}
+                    onChange={(event) => setAnswerText(event.target.value)}
+                  />
+                </div>
+              </div>
+            )}
             {error ? <p className="inline-error" role="alert">{error}</p> : null}
-            <button
-              className="button button-primary button-full"
-              disabled={saving || (!audio && answerText.trim().length === 0)}
-              type="submit"
-            >
-              {saving ? 'Keeping…' : 'Keep this answer'}
-            </button>
+            {!captureInProgress && transcriptStatus !== null ? (
+              <button
+                className="button button-primary button-full"
+                disabled={saving || (!audio && answerText.trim().length === 0)}
+                type="submit"
+              >
+                {saving
+                  ? 'Saving…'
+                  : audio
+                    ? answerText.trim()
+                      ? 'Save voice and transcript'
+                      : 'Save voice answer'
+                    : 'Save transcript'}
+              </button>
+            ) : null}
           </form>
         )}
       </section>
