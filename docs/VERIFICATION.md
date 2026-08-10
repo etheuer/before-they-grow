@@ -1,7 +1,7 @@
 # Verification Evidence
 
 **Candidate:** 0.1.0  
-**Latest run:** 2026-08-10T19:45:16Z
+**Latest run:** 2026-08-10T19:59:13Z
 **Environment:** Local Linux host, GitHub Actions, Vercel production, Playwright Chromium
 
 This evidence covers repository-controlled behavior and the public Vercel prototype. It is not real-device, legal, App Store, recovery-drill, or commercial-launch approval.
@@ -12,7 +12,7 @@ This evidence covers repository-controlled behavior and the public Vercel protot
 |---|---|---|
 | Lint, unit/integration tests, production build | `npm run check` | PASS: 5 test files, 40 tests, including voice-first transcript review, speech-recognition construction/runtime failure recovery, asynchronous recorder error/stop recovery, microphone/recognizer cleanup, replacement-permission safety, lazy IndexedDB bootstrap/retry, and visible storage recovery; Vite production build and PWA service worker generated |
 | Browser journey | `npm run test:e2e` | PASS against a fresh production build/preview: manifest discovery, synchronous IndexedDB-open recovery/retry, and desktop plus Pixel 7 voice → generated transcript → parent edit → save → timeline → export journeys; downloaded JSON is inspected for the reviewed transcript and original non-empty audio; 7 passed, 1 desktop-only duplicate mobile check skipped by design; mobile save control verified clear of fixed navigation |
-| Previous deployed baseline CI | GitHub Actions run `31412302887` | PASS: `quality` and `browser` jobs completed successfully; revised candidate CI is recorded after push |
+| Voice-first release CI | GitHub Actions run `31426487333`, commit `311a3edc4734b73713c512b89ddf8b95622482bb` | PASS: `quality` and `browser` jobs completed successfully for the deployed source revision |
 | Dependency audit | `npm audit --audit-level=high` | PASS: `found 0 vulnerabilities` |
 | Added-line security scan | Regex scan over `git diff` additions | PASS: no hardcoded secrets, shell injection, eval/exec, unsafe deserialization, DOM `innerHTML`, or debug-console patterns |
 
@@ -52,16 +52,19 @@ These are local loopback observations, not claims about cold starts, CDN behavio
 
 ## Production deployment
 
-The deployment evidence below is the verified pre-transcription baseline. The voice-first editable-transcript candidate is not considered deployed until its immutable production deployment and stable alias pass the post-push smoke checks.
+The voice-first editable-transcript release is published and verified:
 
-- **Stable URL:** `https://before-they-grow.vercel.app`
+- **Source commit:** `311a3edc4734b73713c512b89ddf8b95622482bb`
+- **GitHub Actions:** run `31426487333`; `quality` and `browser` jobs passed
+- **Stable public URL:** `https://before-they-grow.vercel.app`
 - **Vercel project:** `et-projects/before-they-grow`
-- **Deployment ID:** `dpl_4daohoSqpjfPJxG2W7H33S7vnaUu`
+- **Immutable deployment:** `https://before-they-grow-a8l2wnaxs-et-projects.vercel.app` (Vercel SSO-protected; provider inspection confirms the stable public alias points to it)
+- **Deployment ID:** `dpl_AsVJEzYv3cWtgmVKJqYVAvtEiVch`
 - **Provider state:** `Ready`, target `production`
-- Direct navigation rendered `/`, `/app`, `/app/memories`, `/app/settings`, `/privacy`, and `/terms` with HTTP 200.
-- The manifest, icons, service worker, hashed JavaScript, and CSS returned expected content types from the stable alias.
-- The production service worker activated at root scope.
-- A fresh-browser journey completed onboarding, IndexedDB save, timeline rendering, versioned JSON export, and confirmed deletion, returning to onboarding with no page errors.
+- The public stable alias rendered `/`, `/app`, `/app/memories`, `/app/settings`, `/privacy`, and `/terms` with HTTP 200 and the expected headings.
+- The manifest is discoverable and the production service worker activated at root scope.
+- Two consecutive fresh-browser production smokes completed onboarding, recording, browser-generated transcript population, parent correction, save, timeline rendering, versioned JSON export, and confirmed deletion without page errors.
+- Both exports contained the corrected transcript, `audio/webm` MIME type, and non-empty Base64 audio from the original recording.
 - Visual inspection confirmed the intended styled marketing page—not an authentication interstitial, stale design, or unstyled/error response.
 
 ## Still external or manual

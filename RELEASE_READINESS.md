@@ -2,7 +2,7 @@
 
 **Release candidate:** 0.1.0  
 **Updated:** 2026-08-10  
-**Decision:** The pre-transcription prototype is publicly deployed. The voice-first editable-transcript revision is locally verified and awaits push, CI, deployment, and production smoke evidence. External beta, legal, recovery, real-device, and App Store gates remain open; this is not a commercially approved launch.
+**Decision:** The voice-first editable-transcript PWA is committed, CI-verified, publicly deployed, and production-smoke verified at the stable Vercel URL. External beta, legal, recovery, real-device, and App Store gates remain open; this is not a commercially approved launch.
 
 Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or blocked outside the repository.
 
@@ -37,10 +37,12 @@ Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or bloc
 ## B. Deployment gates
 
 - [x] Vercel project `et-projects/before-they-grow` selected and linked.
-- [x] HTTPS production deployment is live at `https://before-they-grow.vercel.app`.
+- [x] GitHub Actions run `31426487333` passed `quality` and `browser` for source commit `311a3edc4734b73713c512b89ddf8b95622482bb`.
+- [x] Vercel production deployment `dpl_AsVJEzYv3cWtgmVKJqYVAvtEiVch` is `Ready` in `et-projects/before-they-grow`.
+- [x] HTTPS voice-first production release is live at `https://before-they-grow.vercel.app`.
 - [x] SPA fallback returns rendered application pages for `/app`, `/app/memories`, `/app/settings`, `/privacy`, and `/terms` on the deployed host.
 - [x] Production manifest, icons, service worker, JavaScript, and CSS return expected MIME types; the service worker activates at root scope.
-- [x] Production browser smoke completed onboarding, save, timeline, portable export, and two-step deletion without page errors.
+- [x] Two consecutive production browser smokes completed onboarding, voice recording, generated transcript review/editing, save, timeline, original-audio export, and two-step deletion without page errors.
 - [ ] PWA installation verified from a physical device using the production URL.
 - [ ] Service-worker update and rollback behavior verified.
 - [ ] Error monitoring selected and privacy reviewed.
