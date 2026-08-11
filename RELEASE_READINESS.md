@@ -4,6 +4,8 @@
 **Updated:** 2026-08-10  
 **Decision:** The voice-first editable-transcript PWA is committed, CI-verified, publicly deployed, and production-smoke verified at the stable Vercel URL. External beta, legal, recovery, real-device, and App Store gates remain open; this is not a commercially approved launch.
 
+For the prioritized React Native + Expo production-port gaps and closure criteria, see [`docs/MOBILE_PRODUCTION_GAP_ANALYSIS.md`](docs/MOBILE_PRODUCTION_GAP_ANALYSIS.md).
+
 Legend: `[x]` verified with evidence in this repository; `[ ]` unchecked or blocked outside the repository.
 
 ## A. Verified code and CI-ready gates
