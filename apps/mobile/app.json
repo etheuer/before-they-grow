@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "Before They Grow",
+    "slug": "before-they-grow",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "beforetheygrow",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["ios", "android"],
+    "updates": {
+      "enabled": false
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.beforetheygrow.mobile",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Use Face ID to keep your private family space locked when you are away."
+      }
+    },
+    "android": {
+      "package": "com.beforetheygrow.mobile",
+      "allowBackup": false,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#F7F3EB"
+      }
+    },
+    "plugins": [
+      "expo-dev-client",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Use Face ID to keep your private family space locked when you are away."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "17.0"
+          },
+          "android": {
+            "minSdkVersion": 29
+          }
+        }
+      ]
+    ]
+  }
+}

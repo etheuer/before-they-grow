@@ -1,0 +1,35 @@
+{
+  "name": "@before-they-grow/mobile",
+  "private": true,
+  "version": "0.1.0",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "test": "jest --runInBand --watchAll=false",
+    "typecheck": "tsc --noEmit",
+    "config:public": "expo config --type public"
+  },
+  "dependencies": {
+    "@before-they-grow/application": "0.1.0",
+    "@before-they-grow/contracts": "0.1.0",
+    "@before-they-grow/domain": "0.1.0",
+    "expo": "~57.0.12",
+    "expo-build-properties": "~57.0.10",
+    "expo-dev-client": "~57.0.11",
+    "expo-local-authentication": "~57.0.2",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.2",
+    "react-native-safe-area-context": "~5.7.0"
+  },
+  "devDependencies": {
+    "@testing-library/react-native": "^14.0.1",
+    "@types/jest": "^29.5.14",
+    "@types/react": "~19.2.2",
+    "jest-expo": "~57.0.4",
+    "react-test-renderer": "19.2.3",
+    "typescript": "~6.0.3"
+  }
+}

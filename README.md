@@ -15,6 +15,7 @@ A mobile-first, local-first family voice journal: one age-aware question, one sm
 - Two-step permanent deletion.
 - Installable PWA build with offline precache.
 - Public marketing, privacy, and terms pages.
+- An isolated Expo native shell with mandatory biometric/device-passcode App lock.
 
 This is a publicly deployed, verified prototype—not a commercially approved product. It has no cloud backup, accounts, billing, analytics, or native App Store package. Saved family data remains in the browser that created it. When supported, automatic transcription may use a speech service supplied by the browser; processing may occur on-device or through the browser provider.
 
@@ -35,12 +36,27 @@ Open `http://localhost:5173`.
 
 Microphone recording requires a secure browser context. Browsers treat localhost as secure for development.
 
+## Native development
+
+The native mobile application requires a custom development build because App lock uses native authentication. Expo Go is not a supported or valid verification path.
+
+```bash
+# iOS 17+ simulator or connected iPhone
+npm run ios --workspace @before-they-grow/mobile
+
+# Android API 29+ emulator or connected phone
+npm run android --workspace @before-they-grow/mobile
+
+# Start Metro for an installed development client
+npm run start --workspace @before-they-grow/mobile
+```
+
+Configure platform signing before installing on a physical device. Family content must never be added to build configuration or diagnostics.
+
 ## Verify
 
 ```bash
-npm run lint
-npm test
-npm run build
+npm run check
 npx playwright install chromium
 npm run test:e2e
 ```
@@ -50,13 +66,15 @@ The automated suite covers prompt rotation, IndexedDB persistence, voice capture
 ## Architecture
 
 ```text
-src/
-  components/AudioRecorder.tsx    MediaRecorder and browser speech-recognition lifecycle
-  data/memoryRepository.ts        IndexedDB repository
-  data/portableExport.ts          Versioned JSON export
-  domain/prompts.ts               Deterministic age-aware prompts
-  App.tsx                         Marketing and product routes
-  styles.css                      Shared design system
+apps/
+  mobile/                         Expo/React Native presentation and native adapters
+  web/                            Existing Vite Web PWA and browser-only adapters
+packages/
+  domain/                         Platform-neutral prompts and domain rules
+  contracts/                      Serializable versioned native contracts
+  application/                    Use cases and explicit platform ports
+scripts/
+  check-native-boundaries.mjs     Enforces one-way, browser-free native boundaries
 
 docs/
   PRD.md                          Requirements and Gherkin criteria
@@ -66,7 +84,9 @@ marketing/
   LAUNCH_KIT.md                   Listing and five-channel campaigns
 ```
 
-The current product deliberately has no application backend. Saved family content stays in the browser's IndexedDB until the user exports, deletes, or clears browser storage. Automatic transcription is provided by the browser when available and can involve the browser provider's speech service.
+The repository is an npm-workspaces monorepo. Applications depend inward on platform-neutral packages; shared packages never depend on Expo, React Native, React DOM, browser storage, CSS, or WebView code. The Web PWA remains the verified browser baseline while native equivalence is built independently.
+
+The current Web PWA deliberately has no application backend. Its saved family content stays in browser IndexedDB until the user exports, deletes, or clears browser storage. The native shell in this slice contains no family persistence yet and stores no unlock state, PIN, biometric data, or product-owned key.
 
 ## Product evidence
 
