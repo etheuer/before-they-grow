@@ -7,7 +7,10 @@
     "icon": "./assets/icon.png",
     "scheme": "beforetheygrow",
     "userInterfaceStyle": "automatic",
-    "platforms": ["ios", "android"],
+    "platforms": [
+      "ios",
+      "android"
+    ],
     "updates": {
       "enabled": false
     },
@@ -44,7 +47,8 @@
             "minSdkVersion": 29
           }
         }
-      ]
+      ],
+      "expo-sqlite"
     ]
   }
 }

@@ -3,11 +3,9 @@ import {
   ActivityIndicator,
   Linking,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  useColorScheme,
   View,
 } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
@@ -23,52 +21,22 @@ import {
 } from '@before-they-grow/application'
 import { createExpoAuthenticationPort } from './adapters/expoAuthentication'
 import { createExpoLifecyclePort } from './adapters/expoLifecycle'
-
-type Theme = {
-  background: string
-  surface: string
-  text: string
-  muted: string
-  border: string
-  primary: string
-  primaryPressed: string
-  onPrimary: string
-  quietAccent: string
-}
-
-const lightTheme: Theme = {
-  background: '#F7F3EB',
-  surface: '#FFFDF9',
-  text: '#211F1B',
-  muted: '#655F57',
-  border: '#D8D0C4',
-  primary: '#B63A32',
-  primaryPressed: '#8F2B26',
-  onPrimary: '#FFFFFF',
-  quietAccent: '#E9DDD2',
-}
-
-const darkTheme: Theme = {
-  background: '#161512',
-  surface: '#24211D',
-  text: '#F8F2E8',
-  muted: '#C6BCAF',
-  border: '#4A443D',
-  primary: '#FF8A7A',
-  primaryPressed: '#FFAD9F',
-  onPrimary: '#161512',
-  quietAccent: '#382C27',
-}
+import { ActionButton } from './components/ActionButton'
+import { ProtectedArea } from './ProtectedArea'
+import { darkTheme, useTheme, type Theme } from './theme'
+import type { ProtectedAreaServices } from './services'
 
 type LockedNativeShellProps = {
   authentication: AuthenticationPort
   lifecycle: ApplicationLifecyclePort
+  protectedArea: ProtectedAreaServices
   openDeviceSettings?: () => Promise<void>
 }
 
 export function LockedNativeShell({
   authentication,
   lifecycle,
+  protectedArea,
   openDeviceSettings = Linking.openSettings,
 }: LockedNativeShellProps) {
   const coordinator = useMemo(
@@ -86,7 +54,7 @@ export function LockedNativeShell({
     return coordinator.stop
   }, [coordinator])
 
-  if (status === 'unlocked') return <ProtectedHome />
+  if (status === 'unlocked') return <ProtectedArea services={protectedArea} />
 
   return (
     <LockScreen
@@ -95,10 +63,6 @@ export function LockedNativeShell({
       onRetry={coordinator.retry}
     />
   )
-}
-
-function useTheme() {
-  return useColorScheme() === 'dark' ? darkTheme : lightTheme
 }
 
 function Brand({ theme }: { theme: Theme }) {
@@ -212,72 +176,6 @@ function LockScreen({
           </View>
         </View>
       </ScrollView>
-    </SafeAreaView>
-  )
-}
-
-function ActionButton({
-  label,
-  onPress,
-  theme,
-  variant = 'primary',
-}: {
-  label: string
-  onPress: () => void
-  theme: Theme
-  variant?: 'primary' | 'secondary'
-}) {
-  const secondary = variant === 'secondary'
-  return (
-    <Pressable
-      accessibilityRole="button"
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.button,
-        secondary
-          ? { backgroundColor: theme.surface, borderColor: theme.border }
-          : {
-              backgroundColor: pressed ? theme.primaryPressed : theme.primary,
-              borderColor: pressed ? theme.primaryPressed : theme.primary,
-            },
-        pressed && secondary ? styles.buttonPressed : null,
-      ]}
-    >
-      <Text
-        style={[
-          styles.buttonLabel,
-          { color: secondary ? theme.text : theme.onPrimary },
-        ]}
-      >
-        {label}
-      </Text>
-    </Pressable>
-  )
-}
-
-function ProtectedHome() {
-  const theme = useTheme()
-  return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
-      <StatusBar style={theme === darkTheme ? 'light' : 'dark'} />
-      <View style={[styles.protectedScreen, styles.screenWidth]}>
-        <Brand theme={theme} />
-        <View style={styles.protectedContent}>
-          <View style={[styles.unlockedMark, { backgroundColor: theme.primary }]}>
-            <View style={[styles.unlockedStem, { backgroundColor: theme.onPrimary }]} />
-            <View style={[styles.unlockedTick, { backgroundColor: theme.onPrimary }]} />
-          </View>
-          <Text accessibilityRole="header" style={[styles.protectedTitle, { color: theme.text }]}>
-            Your family space is unlocked
-          </Text>
-          <Text style={[styles.protectedMessage, { color: theme.muted }]}>
-            A quiet place for tonight’s question and the memories you keep on this phone.
-          </Text>
-        </View>
-        <View style={[styles.readyLine, { borderTopColor: theme.border }]}>
-          <Text style={[styles.readyText, { color: theme.muted }]}>Protected whenever you leave</Text>
-        </View>
-      </View>
     </SafeAreaView>
   )
 }
@@ -430,22 +328,6 @@ const styles = StyleSheet.create({
     maxWidth: 360,
     width: '100%',
   },
-  button: {
-    alignItems: 'center',
-    borderRadius: 12,
-    borderWidth: 1,
-    justifyContent: 'center',
-    minHeight: 52,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-  },
-  buttonPressed: {
-    opacity: 0.72,
-  },
-  buttonLabel: {
-    fontSize: 17,
-    fontWeight: '700',
-  },
   privacyNote: {
     alignItems: 'flex-start',
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -512,18 +394,9 @@ const styles = StyleSheet.create({
     marginTop: 16,
     maxWidth: 430,
   },
-  readyLine: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingBottom: 10,
-    paddingTop: 18,
-  },
-  readyText: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
 })
 
-export default function App() {
+export default function App({ services }: { services: ProtectedAreaServices }) {
   const authentication = useMemo(createExpoAuthenticationPort, [])
   const lifecycle = useMemo(createExpoLifecyclePort, [])
 
@@ -532,6 +405,7 @@ export default function App() {
       <LockedNativeShell
         authentication={authentication}
         lifecycle={lifecycle}
+        protectedArea={services}
       />
     </SafeAreaProvider>
   )
