@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { AudioRecorder } from './AudioRecorder'
@@ -19,6 +19,26 @@ class FakeMediaRecorder {
 
   stop() {
     this.state = 'inactive'
+    this.ondataavailable?.({
+      data: new Blob(['recorded-voice'], { type: 'audio/webm' }),
+    } as BlobEvent)
+    this.onstop?.()
+  }
+}
+
+class DeferredStopMediaRecorder extends FakeMediaRecorder {
+  static current: DeferredStopMediaRecorder
+
+  constructor() {
+    super()
+    DeferredStopMediaRecorder.current = this
+  }
+
+  override stop() {
+    this.state = 'inactive'
+  }
+
+  finish() {
     this.ondataavailable?.({
       data: new Blob(['recorded-voice'], { type: 'audio/webm' }),
     } as BlobEvent)
@@ -83,6 +103,39 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+it('uses explicit requesting, recording, and processing language', async () => {
+  const user = userEvent.setup()
+  let resolvePermission!: (stream: MediaStream) => void
+  const permission = new Promise<MediaStream>((resolve) => {
+    resolvePermission = resolve
+  })
+  Object.defineProperty(navigator, 'mediaDevices', {
+    configurable: true,
+    value: { getUserMedia: vi.fn(() => permission) },
+  })
+  Object.defineProperty(globalThis, 'MediaRecorder', {
+    configurable: true,
+    value: DeferredStopMediaRecorder,
+  })
+  render(<AudioRecorder onRecorded={vi.fn()} />)
+
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
+  expect(screen.getByRole('button', { name: 'Waiting for microphone…' })).toBeDisabled()
+  expect(screen.getByRole('status')).toHaveTextContent('Your browser will ask for microphone access.')
+
+  resolvePermission({ getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream)
+  expect(await screen.findByRole('button', { name: 'Finish recording' })).toBeInTheDocument()
+  expect(screen.getByRole('status')).toHaveTextContent('Recording 00:00')
+  await waitFor(
+    () => expect(screen.getByRole('status')).toHaveTextContent('Recording 00:01'),
+    { timeout: 2_000 },
+  )
+  await user.click(screen.getByRole('button', { name: 'Finish recording' }))
+  expect(screen.getByRole('status')).toHaveTextContent('Preparing your answer…')
+  act(() => DeferredStopMediaRecorder.current.finish())
+  expect(await screen.findByText('Voice recorded')).toBeInTheDocument()
+})
+
 it('records a voice answer and releases the microphone', async () => {
   const user = userEvent.setup()
   const stopTrack = vi.fn()
@@ -101,7 +154,7 @@ it('records a voice answer and releases the microphone', async () => {
 
   render(<AudioRecorder onRecorded={onRecorded} />)
 
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
   expect(getUserMedia).toHaveBeenCalledWith({ audio: true })
   expect(
     screen.getByRole('button', { name: 'Finish recording' }),
@@ -118,7 +171,7 @@ it('records a voice answer and releases the microphone', async () => {
   expect(await audio.text()).toBe('recorded-voice')
   expect(transcriptStatus).toBe('unavailable')
   expect(stopTrack).toHaveBeenCalledTimes(1)
-  expect(screen.getByText('Voice answer ready')).toBeInTheDocument()
+  expect(screen.getByText('Voice recorded')).toBeInTheDocument()
 })
 
 it('returns a browser-generated transcript with the original audio', async () => {
@@ -142,7 +195,7 @@ it('returns a browser-generated transcript with the original audio', async () =>
   const onRecorded = vi.fn()
   render(<AudioRecorder onRecorded={onRecorded} />)
 
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
   await user.click(screen.getByRole('button', { name: 'Finish recording' }))
 
   expect(onRecorded).toHaveBeenCalledTimes(1)
@@ -180,7 +233,7 @@ it('rejects an empty recording instead of reporting a ready voice answer', async
   const onUnavailable = vi.fn()
   render(<AudioRecorder onRecorded={onRecorded} onUnavailable={onUnavailable} />)
 
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
   await user.click(screen.getByRole('button', { name: 'Finish recording' }))
 
   expect(onRecorded).not.toHaveBeenCalled()
@@ -229,10 +282,10 @@ it('ignores a late end callback from an earlier recognition session', async () =
   const onRecorded = vi.fn()
   render(<AudioRecorder onRecorded={onRecorded} />)
 
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
   await user.click(screen.getByRole('button', { name: 'Finish recording' }))
   await waitFor(
-    () => expect(screen.getByText('Voice answer ready')).toBeInTheDocument(),
+    () => expect(screen.getByText('Voice recorded')).toBeInTheDocument(),
     { timeout: 3000 },
   )
 
@@ -285,7 +338,7 @@ it('aborts failed transcription and still returns the recorded audio', async () 
   const onRecorded = vi.fn()
   render(<AudioRecorder onRecorded={onRecorded} />)
 
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
   FailingSpeechRecognition.instance.fail()
   await user.click(screen.getByRole('button', { name: 'Finish recording' }))
 
@@ -326,7 +379,7 @@ it('keeps the audio when browser transcription cannot stop cleanly', async () =>
   const onRecorded = vi.fn()
   render(<AudioRecorder onRecorded={onRecorded} />)
 
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
   await user.click(screen.getByRole('button', { name: 'Finish recording' }))
 
   expect(onRecorded).toHaveBeenCalledWith(
@@ -367,7 +420,7 @@ it('continues audio recording when speech-recognition construction fails', async
   })
 
   render(<AudioRecorder onRecorded={onRecorded} onUnavailable={onUnavailable} />)
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
 
   expect(screen.getByRole('button', { name: 'Finish recording' })).toBeInTheDocument()
   expect(onUnavailable).not.toHaveBeenCalled()
@@ -411,7 +464,7 @@ it('recovers and releases resources after an asynchronous recorder error', async
   })
 
   render(<AudioRecorder onRecorded={onRecorded} onUnavailable={onUnavailable} />)
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
   ErroringMediaRecorder.instance.fail()
 
   expect(await screen.findByRole('alert')).toHaveTextContent('recording could not be completed')
@@ -444,7 +497,7 @@ it('recovers and releases resources when recorder stop throws', async () => {
   })
 
   render(<AudioRecorder onRecorded={vi.fn()} onUnavailable={onUnavailable} />)
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
   await user.click(screen.getByRole('button', { name: 'Finish recording' }))
 
   expect(await screen.findByRole('alert')).toHaveTextContent('recording could not be completed')
@@ -491,7 +544,7 @@ it('aborts transcription when audio recorder initialization fails', async () => 
   const onUnavailable = vi.fn()
   render(<AudioRecorder onRecorded={vi.fn()} onUnavailable={onUnavailable} />)
 
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
 
   expect(abortRecognition).toHaveBeenCalledTimes(1)
   expect(stopTrack).toHaveBeenCalledTimes(1)
@@ -523,7 +576,7 @@ it('keeps the completed answer while a replacement microphone request is pending
     <AudioRecorder onRecorded={vi.fn()} onRecordingStarted={onRecordingStarted} />,
   )
 
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
   await user.click(screen.getByRole('button', { name: 'Finish recording' }))
   expect(onRecordingStarted).toHaveBeenCalledTimes(1)
 
@@ -563,7 +616,7 @@ it('releases the microphone when recognition abort throws during unmount', async
     value: ThrowingAbortSpeechRecognition,
   })
   const view = render(<AudioRecorder onRecorded={vi.fn()} />)
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
 
   expect(() => view.unmount()).not.toThrow()
   expect(stopTrack).toHaveBeenCalledTimes(1)
@@ -589,7 +642,7 @@ it('releases a microphone stream that resolves after unmount', async () => {
   })
 
   const { unmount } = render(<AudioRecorder onRecorded={vi.fn()} />)
-  await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+  await user.click(screen.getByRole('button', { name: 'Record an answer' }))
   unmount()
 
   resolvePermission({

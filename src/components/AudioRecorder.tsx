@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { CheckCircle, Microphone, StopCircle } from '@phosphor-icons/react'
+import { CheckCircle, CircleNotch, Microphone, StopCircle } from '@phosphor-icons/react'
 
 export type TranscriptStatus = 'complete' | 'empty' | 'unavailable'
 
@@ -13,6 +13,7 @@ type AudioRecorderProps = {
   onRecorded: (answer: RecordedAnswer) => void
   onRecordingStarted?: () => void
   onUnavailable?: () => void
+  preservesPreviousAnswer?: boolean
 }
 
 type RecorderStatus = 'idle' | 'requesting' | 'recording' | 'processing' | 'ready' | 'error'
@@ -66,9 +67,14 @@ export function AudioRecorder({
   onRecorded,
   onRecordingStarted,
   onUnavailable,
+  preservesPreviousAnswer = false,
 }: AudioRecorderProps) {
   const [status, setStatus] = useState<RecorderStatus>('idle')
   const [error, setError] = useState('')
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const previousAnswerSafetyMessage = preservesPreviousAnswer
+    ? ' Your previous voice and transcript remain safe.'
+    : ''
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -78,6 +84,7 @@ export function AudioRecorder({
   const recognitionSettledRef = useRef(true)
   const completedAudioRef = useRef<Blob | null>(null)
   const recognitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const captureGenerationRef = useRef(0)
   const mountedRef = useRef(true)
 
@@ -85,6 +92,13 @@ export function AudioRecorder({
     if (recognitionTimeoutRef.current !== null) {
       clearTimeout(recognitionTimeoutRef.current)
       recognitionTimeoutRef.current = null
+    }
+  }
+
+  function clearElapsedTimer() {
+    if (elapsedTimerRef.current !== null) {
+      clearInterval(elapsedTimerRef.current)
+      elapsedTimerRef.current = null
     }
   }
 
@@ -98,6 +112,7 @@ export function AudioRecorder({
     ) return
 
     clearRecognitionTimeout()
+    clearElapsedTimer()
     completedAudioRef.current = null
     const recognition = recognitionRef.current
     if (recognition) {
@@ -118,6 +133,7 @@ export function AudioRecorder({
     if (!mountedRef.current || captureGenerationRef.current !== generation) return
 
     clearRecognitionTimeout()
+    clearElapsedTimer()
     abortAndDetachRecognition(recognitionRef.current)
     recognitionRef.current = null
     recognitionSettledRef.current = true
@@ -142,7 +158,7 @@ export function AudioRecorder({
     streamRef.current = null
     chunksRef.current = []
     completedAudioRef.current = null
-    setError(message)
+    setError(message + previousAnswerSafetyMessage)
     setStatus('error')
     onUnavailable?.()
   }
@@ -153,6 +169,7 @@ export function AudioRecorder({
       mountedRef.current = false
       captureGenerationRef.current += 1
       clearRecognitionTimeout()
+      clearElapsedTimer()
       const recognition = recognitionRef.current
       abortAndDetachRecognition(recognition)
       const recorder = recorderRef.current
@@ -284,6 +301,13 @@ export function AudioRecorder({
 
       recorderRef.current = recorder
       recorder.start()
+      setElapsedSeconds(0)
+      const startedAt = Date.now()
+      clearElapsedTimer()
+      elapsedTimerRef.current = setInterval(() => {
+        if (!mountedRef.current || captureGenerationRef.current !== generation) return
+        setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000))
+      }, 250)
       onRecordingStarted?.()
       setStatus('recording')
     } catch {
@@ -308,9 +332,10 @@ export function AudioRecorder({
       streamRef.current?.getTracks().forEach((track) => track.stop())
       streamRef.current = null
       if (!mountedRef.current) return
-      setError(hadStream
+      setError((hadStream
         ? 'Voice recording could not start. Please try again or enter a recovery transcript.'
         : 'Microphone access was not available. You can enter a recovery transcript instead.')
+        + previousAnswerSafetyMessage)
       setStatus('error')
       onUnavailable?.()
     }
@@ -321,6 +346,7 @@ export function AudioRecorder({
     if (recorder?.state !== 'recording') return
 
     const generation = captureGenerationRef.current
+    clearElapsedTimer()
     setStatus('processing')
     const recognition = recognitionRef.current
     if (recognition && !recognitionSettledRef.current) {
@@ -352,19 +378,27 @@ export function AudioRecorder({
   }
 
   if (status === 'recording') {
+    const minutes = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0')
+    const seconds = (elapsedSeconds % 60).toString().padStart(2, '0')
     return (
-      <button className="record-button is-recording" onClick={stopRecording} type="button">
-        <StopCircle weight="fill" aria-hidden="true" />
-        Finish recording
-      </button>
+      <div className="recorder-control recorder-state">
+        <button className="record-button is-recording" onClick={stopRecording} type="button">
+          <StopCircle weight="fill" aria-hidden="true" />
+          Finish recording
+        </button>
+        <p className="recording-status" role="status">
+          <span className="recording-dot" aria-hidden="true" />
+          Recording <time>{minutes}:{seconds}</time>
+        </p>
+      </div>
     )
   }
 
   if (status === 'processing') {
     return (
-      <div className="recording-ready" role="status">
-        <Microphone weight="fill" aria-hidden="true" />
-        <span>Preparing voice and transcript…</span>
+      <div className="recording-ready is-processing" role="status">
+        <CircleNotch className="spinner" aria-hidden="true" />
+        <span>Preparing your answer…</span>
       </div>
     )
   }
@@ -373,7 +407,7 @@ export function AudioRecorder({
     return (
       <div className="recording-ready" role="status">
         <CheckCircle weight="fill" aria-hidden="true" />
-        <span>Voice answer ready</span>
+        <span>Voice recorded</span>
         <button onClick={startRecording} type="button">Record again</button>
       </div>
     )
@@ -387,9 +421,14 @@ export function AudioRecorder({
         onClick={startRecording}
         type="button"
       >
-        <Microphone weight="fill" aria-hidden="true" />
-        {status === 'requesting' ? 'Opening microphone…' : 'Record their voice'}
+        {status === 'requesting'
+          ? <CircleNotch className="spinner" aria-hidden="true" />
+          : <Microphone weight="fill" aria-hidden="true" />}
+        {status === 'requesting' ? 'Waiting for microphone…' : 'Record an answer'}
       </button>
+      {status === 'requesting' ? (
+        <p className="recorder-note" role="status">Your browser will ask for microphone access.</p>
+      ) : null}
       {error ? <p className="inline-error" role="alert">{error}</p> : null}
     </div>
   )

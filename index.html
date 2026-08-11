@@ -3,7 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f04e3e" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f7f3eb" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#161512" />
+    <script>
+      (() => {
+        try {
+          const saved = localStorage.getItem('before-they-grow-appearance')
+          const theme = saved === 'light' || saved === 'dark'
+            ? saved
+            : window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          document.documentElement.dataset.theme = theme
+          document.documentElement.style.colorScheme = theme
+        } catch {
+          const theme = typeof window.matchMedia === 'function'
+            && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          document.documentElement.dataset.theme = theme
+          document.documentElement.style.colorScheme = theme
+        }
+      })()
+    </script>
     <meta name="description" content="Capture one small answer in your child's real voice before bedtime." />
     <link rel="icon" type="image/png" href="/icons/icon-192.png" />
     <link rel="manifest" href="/manifest.webmanifest" />

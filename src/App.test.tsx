@@ -130,9 +130,85 @@ describe('Before They Grow journey', () => {
         name: 'One question tonight. Their voice tomorrow.',
       }),
     ).toBeInTheDocument()
+    const callsToAction = screen.getAllByRole('link', { name: 'Try tonight’s question' })
+    expect(callsToAction).toHaveLength(2)
+    expect(callsToAction.every((link) => link.getAttribute('href') === '/app')).toBe(true)
+    expect(screen.getByText('Record an answer')).toBeInTheDocument()
+    expect(screen.getByText('Review the transcript')).toBeInTheDocument()
+    expect(screen.getByText('Saved to Milo’s memories')).toBeInTheDocument()
+  })
+
+  it('requires an explicit age choice before onboarding can finish', async () => {
+    const user = userEvent.setup()
+    const { repository } = createFakeRepository()
+    renderRoute('/app', repository)
+
+    const submit = await screen.findByRole('button', { name: 'Start our ritual' })
+    const choices = screen.getAllByRole('radio')
+    expect(choices).toHaveLength(3)
+    expect(choices.every((choice) => !(choice as HTMLInputElement).checked)).toBe(true)
+    expect(submit).toBeDisabled()
+
+    await user.type(screen.getByLabelText('Child’s first name or nickname'), 'Milo')
+    expect(submit).toBeDisabled()
+    await user.click(screen.getByRole('radio', { name: '6 to 8' }))
+    expect(submit).toBeEnabled()
+  })
+
+  it('renders stable labeled icon navigation with the active route exposed', async () => {
+    const { repository } = createFakeRepository({
+      childName: 'Milo',
+      ageBand: '6-8',
+      consentedAt: '2026-08-10T19:00:00.000Z',
+    })
+    renderRoute('/app/memories', repository)
+
+    const navigation = await screen.findByRole('navigation', { name: 'App navigation' })
+    const links = Array.from(navigation.querySelectorAll('a'))
+    expect(links.map((link) => link.textContent)).toEqual(['Tonight', 'Memories', 'Settings'])
+    expect(links.every((link) => link.querySelector('svg'))).toBe(true)
+    expect(screen.getByRole('link', { name: 'Memories' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('stores and applies an explicit appearance preference', async () => {
+    const user = userEvent.setup()
+    const { repository } = createFakeRepository({
+      childName: 'Milo',
+      ageBand: '6-8',
+      consentedAt: '2026-08-10T19:00:00.000Z',
+    })
+    renderRoute('/app/settings', repository)
+
+    expect(await screen.findByRole('radio', { name: 'System' })).toBeChecked()
+    await user.click(screen.getByRole('radio', { name: 'Dark' }))
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
+    expect(localStorage.getItem('before-they-grow-appearance')).toBe('dark')
+    await user.click(screen.getByRole('radio', { name: 'Light' }))
+    expect(document.documentElement).toHaveAttribute('data-theme', 'light')
+  })
+
+  it('keeps public routes usable when appearance storage reads are denied', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError')
+    })
+    const { repository } = createFakeRepository()
+
+    renderRoute('/', repository)
+
     expect(
-      screen.getByRole('link', { name: 'Try tonight’s question' }),
-    ).toHaveAttribute('href', '/app')
+      screen.getByRole('heading', { name: 'One question tonight. Their voice tomorrow.' }),
+    ).toBeInTheDocument()
+  })
+
+  it('keeps public routes usable when appearance storage writes are denied', () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError')
+    })
+    const { repository } = createFakeRepository()
+
+    renderRoute('/terms', repository)
+
+    expect(screen.getByRole('heading', { name: 'Terms of use' })).toBeInTheDocument()
   })
 
   it('onboards a family before showing the daily question', async () => {
@@ -184,7 +260,7 @@ describe('Before They Grow journey', () => {
     expect(await screen.findByRole('heading', { name: 'Tonight’s question' })).toBeInTheDocument()
     expect(screen.queryByLabelText('Review the transcript')).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+    await user.click(screen.getByRole('button', { name: 'Record an answer' }))
     await user.click(screen.getByRole('button', { name: 'Finish recording' }))
 
     const transcript = await screen.findByLabelText('Review the transcript')
@@ -193,7 +269,9 @@ describe('Before They Grow journey', () => {
     await user.type(transcript, 'I learned how to whistle.')
     await user.click(screen.getByRole('button', { name: 'Save voice and transcript' }))
 
-    expect(await screen.findByText('Saved to Milo’s timeline.')).toBeInTheDocument()
+    expect(await screen.findByText('Saved to Milo’s memories.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Play this memory' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'View memories' })).toHaveAttribute('href', '/app/memories')
     expect(memories).toHaveLength(1)
     expect(memories[0]).toMatchObject({
       answerText: 'I learned how to whistle.',
@@ -226,7 +304,7 @@ describe('Before They Grow journey', () => {
     })
     renderRoute('/app', repository)
 
-    await user.click(await screen.findByRole('button', { name: 'Record their voice' }))
+    await user.click(await screen.findByRole('button', { name: 'Record an answer' }))
     await user.click(screen.getByRole('button', { name: 'Finish recording' }))
     const transcript = await screen.findByLabelText('Review the transcript')
     await user.clear(transcript)
@@ -235,6 +313,9 @@ describe('Before They Grow journey', () => {
     await user.click(screen.getByRole('button', { name: 'Record again' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Microphone access was not available.')
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Your previous voice and transcript remain safe.',
+    )
     expect(transcript).toHaveValue('Parent corrected this irreplaceable answer.')
     const save = screen.getByRole('button', { name: 'Save voice and transcript' })
     expect(save).toBeEnabled()
@@ -280,7 +361,7 @@ describe('Before They Grow journey', () => {
     })
     renderRoute('/app', repository)
 
-    await user.click(await screen.findByRole('button', { name: 'Record their voice' }))
+    await user.click(await screen.findByRole('button', { name: 'Record an answer' }))
     await user.click(screen.getByRole('button', { name: 'Finish recording' }))
     const transcript = await screen.findByLabelText('Review the transcript')
     await user.type(transcript, 'Keep this parent transcript.')
@@ -289,6 +370,9 @@ describe('Before They Grow journey', () => {
     await user.click(screen.getByRole('button', { name: 'Finish recording' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('No voice was captured')
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Your previous voice and transcript remain safe.',
+    )
     expect(transcript).toHaveValue('Keep this parent transcript.')
     await user.click(screen.getByRole('button', { name: 'Save voice and transcript' }))
     expect(memories).toHaveLength(1)
@@ -309,7 +393,7 @@ describe('Before They Grow journey', () => {
 
     expect(await screen.findByRole('heading', { name: 'Tonight’s question' })).toBeInTheDocument()
     expect(screen.queryByLabelText('Review the transcript')).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Record their voice' }))
+    await user.click(screen.getByRole('button', { name: 'Record an answer' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Voice recording is not supported here.',
@@ -347,7 +431,7 @@ describe('Before They Grow journey', () => {
     renderRoute('/app', repository)
 
     await user.click(
-      await screen.findByRole('button', { name: 'Record their voice' }),
+      await screen.findByRole('button', { name: 'Record an answer' }),
     )
     await user.click(screen.getByRole('button', { name: 'Finish recording' }))
     await user.click(screen.getByRole('button', { name: 'Save voice answer' }))
@@ -357,7 +441,29 @@ describe('Before They Grow journey', () => {
     expect(memories[0].audio).toBeInstanceOf(Blob)
   })
 
-  it('shows saved answers in a chronological memory timeline', async () => {
+  it('does not present a false saved-answer count while memories are loading', async () => {
+    let resolveMemories!: (memories: MemoryEntry[]) => void
+    const pendingMemories = new Promise<MemoryEntry[]>((resolve) => {
+      resolveMemories = resolve
+    })
+    const { repository } = createFakeRepository({
+      childName: 'Milo',
+      ageBand: '6-8',
+      consentedAt: '2026-08-10T19:00:00.000Z',
+    })
+    vi.mocked(repository.listMemories).mockReturnValueOnce(pendingMemories)
+
+    renderRoute('/app/memories', repository)
+
+    expect(await screen.findByLabelText('Opening memories')).toBeInTheDocument()
+    expect(screen.getByText('Opening saved answers…')).toBeInTheDocument()
+    expect(screen.queryByText('0 saved answers')).not.toBeInTheDocument()
+
+    resolveMemories([])
+    expect(await screen.findByText('0 saved answers')).toBeInTheDocument()
+  })
+
+  it('shows saved answers in chronological memory groups', async () => {
     const { repository, memories } = createFakeRepository({
       childName: 'Milo',
       ageBand: '6-8',
@@ -368,17 +474,29 @@ describe('Before They Grow journey', () => {
       promptId: 'prompt-1',
       question: 'What made you laugh today?',
       answerText: 'The dog sneezed.',
-      audio: null,
+      audio: new Blob(['family-voice'], { type: 'audio/webm' }),
       recordedAt: '2026-08-10T20:00:00.000Z',
+    })
+    memories.push({
+      id: 'memory-2',
+      promptId: 'prompt-2',
+      question: 'What did you learn?',
+      answerText: 'How to whistle.',
+      audio: null,
+      recordedAt: '2026-07-31T20:00:00.000Z',
     })
 
     renderRoute('/app/memories', repository)
 
     expect(
-      await screen.findByRole('heading', { name: 'Milo’s growing timeline' }),
+      await screen.findByRole('heading', { name: 'Milo’s memories' }),
     ).toBeInTheDocument()
     expect(await screen.findByText('What made you laugh today?')).toBeInTheDocument()
     expect(screen.getByText('“The dog sneezed.”')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'August 2026' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'July 2026' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Play answer' })).toBeInTheDocument()
+    expect(screen.getByText('2 saved answers')).toBeInTheDocument()
   })
 
   it('exports a portable copy from settings', async () => {
@@ -410,7 +528,7 @@ describe('Before They Grow journey', () => {
 
     renderRoute('/app/settings', repository)
     await user.click(
-      await screen.findByRole('button', { name: 'Export my memories' }),
+      await screen.findByRole('button', { name: 'Download a backup' }),
     )
 
     expect(createObjectURL).toHaveBeenCalledTimes(1)
@@ -469,6 +587,7 @@ describe('Before They Grow journey', () => {
       await screen.findByLabelText('Child’s first name or nickname'),
       'Milo',
     )
+    await user.click(screen.getByRole('radio', { name: '6 to 8' }))
     await user.click(screen.getByRole('button', { name: 'Start our ritual' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -491,7 +610,7 @@ describe('Before They Grow journey', () => {
       configurable: true,
       value: AppFakeMediaRecorder,
     })
-    const { repository } = createFakeRepository({
+    const { repository, memories } = createFakeRepository({
       childName: 'Milo',
       ageBand: '6-8',
       consentedAt: '2026-08-10T19:00:00.000Z',
@@ -501,7 +620,7 @@ describe('Before They Grow journey', () => {
     )
     renderRoute('/app', repository)
 
-    await user.click(await screen.findByRole('button', { name: 'Record their voice' }))
+    await user.click(await screen.findByRole('button', { name: 'Record an answer' }))
     await user.click(screen.getByRole('button', { name: 'Finish recording' }))
     const answer = await screen.findByLabelText('Review the transcript')
     await user.type(answer, 'Keep this exact answer.')
@@ -512,9 +631,12 @@ describe('Before They Grow journey', () => {
     )
     expect(screen.getByRole('button', { name: 'Save voice and transcript' })).toBeEnabled()
     expect(answer).toHaveValue('Keep this exact answer.')
+    await user.click(screen.getByRole('button', { name: 'Save voice and transcript' }))
+    expect(await screen.findByText('Saved to Milo’s memories.')).toBeInTheDocument()
+    expect(memories).toHaveLength(1)
   })
 
-  it('shows a recoverable timeline error when local reads fail', async () => {
+  it('shows a recoverable memories error when local reads fail', async () => {
     const user = userEvent.setup()
     const { repository } = createFakeRepository({
       childName: 'Milo',
@@ -527,10 +649,12 @@ describe('Before They Grow journey', () => {
     renderRoute('/app/memories', repository)
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'We could not open this timeline.',
+      'We could not open your memories.',
     )
+    expect(screen.queryByText('Opening saved answers…')).not.toBeInTheDocument()
+    expect(screen.getByText('Saved answers unavailable.')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Try again' }))
-    expect(await screen.findByText('The first answer starts tonight.')).toBeInTheDocument()
+    expect(await screen.findByText('The first answer starts with tonight’s question.')).toBeInTheDocument()
   })
 
   it('recovers when export or deletion fails', async () => {
@@ -548,7 +672,7 @@ describe('Before They Grow journey', () => {
     )
     renderRoute('/app/settings', repository)
 
-    const exportButton = await screen.findByRole('button', { name: 'Export my memories' })
+    const exportButton = await screen.findByRole('button', { name: 'Download a backup' })
     await user.click(exportButton)
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'We could not prepare your export.',
@@ -556,11 +680,14 @@ describe('Before They Grow journey', () => {
     expect(exportButton).toBeEnabled()
 
     await user.click(screen.getByRole('button', { name: 'Delete everything' }))
+    const cancelButton = screen.getByRole('button', { name: 'Cancel' })
     const deleteButton = screen.getByRole('button', { name: 'Yes, delete everything' })
+    expect(cancelButton).toHaveClass('button-safe')
+    expect(deleteButton).toHaveClass('button-danger-outline')
     await user.click(deleteButton)
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'We could not delete your local data.',
-    )
+    const deleteError = await screen.findByText('We could not delete your local data. Nothing was removed.')
+    expect(deleteError).toHaveAttribute('role', 'alert')
+    expect(deleteError.closest('.danger-section')).not.toBeNull()
     expect(deleteButton).toBeEnabled()
   })
 
