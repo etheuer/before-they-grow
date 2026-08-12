@@ -213,7 +213,13 @@ export function createSqliteProfileRepository(
     })
     if (report.kind === 'blocked') throw new StorageGateError(report.reason)
     await inventory.cleanRecognizedStale()
-    await inventory.reconcileUnreferenced(referenced.map((item) => item.relativePath))
+    // Reconciling unreferenced final media during bootstrap can orphan
+    // files from interrupted saves whose journal reconciliation has not yet
+    // run (process death between media move and journal advance). For MVP,
+    // unreferenced files are left on disk; only missing-media Unavailable
+    // memories are surfaced. A safe cleanup pass follows in post-MVP
+    // filesystem migration (#38 hardening).
+    // await inventory.reconcileUnreferenced(referenced.map((item) => item.relativePath))
     unavailable = report.unavailable
   }
 

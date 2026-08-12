@@ -192,14 +192,9 @@ export function createProtectedAreaServices(
       const { profile, memory } = await getRepositorySet()
       try {
         await profile.open()
-        // Recognized stale cache is removed only after the catalog and known
-        // layout validate. An App-lock remount skips this so an in-process
-        // Unsaved recording survives the obscured/unlocked transition.
-        if (!cleanedCacheThisProcess) {
-          cleanedCacheThisProcess = true
-          await cleanStaleCaptureCache()
-        }
-        await resumeFilesystemMigration(mediaStore, storageLayoutVersion)
+        // Save-operation reconciliation must run before any removal of
+        // staging/cache media, so interrupted saves are recovered rather
+        // than deleted as orphans.
         const reconciled = await reconcileSaveOperations({
           repository: memory,
           mediaStore,
@@ -210,6 +205,15 @@ export function createProtectedAreaServices(
           // A journaled operation is resolved now; its cache is no longer an
           // immediate retry and must not reappear as an Unsaved candidate.
           clearUnsaved()
+        }
+        // Recognized stale capture-cache files are cleaned after the catalog
+        // validates and journal operations are resolved. An App-lock remount
+        // skips this so an in-process Unsaved recording survives.
+        if (!cleanedCacheThisProcess) {
+          cleanedCacheThisProcess = true
+          await cleanStaleCaptureCache()
+        }
+        await resumeFilesystemMigration(mediaStore, storageLayoutVersion)
         }
         indeterminateStorage = false
         const unavailable = profile.consumeUnavailable?.() ?? []
