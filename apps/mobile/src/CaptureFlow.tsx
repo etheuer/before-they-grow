@@ -18,8 +18,11 @@ import {
   type ValidatedAudio,
 } from '@before-they-grow/application'
 import { ActionButton } from './components/ActionButton'
+import { LocalLossNote } from './components/LocalLossNote'
+import { LOCAL_LOSS_SUMMARY } from './copy'
 import type { ProtectedAreaServices } from './services'
 import type { Theme } from './theme'
+import { useReducedMotion } from './useReducedMotion'
 
 type CaptureStep =
   | 'idle'
@@ -83,6 +86,7 @@ export function CaptureFlow({
   const [interruptionNotice, setInterruptionNotice] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
+  const reduceMotion = useReducedMotion()
   const finalizeLock = useRef(false)
   const manualOperation = useRef<SaveOperationIdentity | undefined>(undefined)
   const manualSaveNow = useRef<Date | undefined>(undefined)
@@ -437,7 +441,12 @@ export function CaptureFlow({
           </Text>
         ) : null}
         <View style={styles.action}>
-          <ActionButton label="Record their voice" onPress={begin} theme={theme} />
+          <ActionButton
+            label="Record their voice"
+            accessibilityHint="Asks for the microphone only if you continue"
+            onPress={begin}
+            theme={theme}
+          />
         </View>
       </View>
     )
@@ -451,11 +460,12 @@ export function CaptureFlow({
         </Text>
         <Text style={[styles.stepBody, { color: theme.muted }]}>
           Before They Grow asks for the microphone only when you choose to
-          record, and your answer stays on this phone. Nothing is uploaded.
+          record. Nothing is uploaded. {LOCAL_LOSS_SUMMARY}
         </Text>
+        <LocalLossNote theme={theme} compact />
         {step === 'requesting' ? (
           <View accessibilityLabel="Requesting microphone access" accessibilityRole="progressbar" style={styles.requestingRow}>
-            <ActivityIndicator color={theme.primary} size="small" />
+            {reduceMotion ? null : <ActivityIndicator color={theme.primary} size="small" />}
             <Text style={[styles.requestingText, { color: theme.muted }]}>
               Asking for microphone access…
             </Text>
@@ -476,7 +486,11 @@ export function CaptureFlow({
         <Text accessibilityRole="header" style={[styles.stepTitle, { color: theme.text }]}>
           Recording
         </Text>
-        <Text style={[styles.clock, { color: theme.primary }]} accessibilityLiveRegion="polite">
+        <Text
+          style={[styles.clock, { color: theme.primary }]}
+          accessibilityLiveRegion="polite"
+          accessibilityLabel={`Recording ${formatClock(elapsedMs)}`}
+        >
           {formatClock(elapsedMs)}
         </Text>
         <Text style={[styles.stepBody, { color: theme.muted }]}>
@@ -494,7 +508,7 @@ export function CaptureFlow({
     return (
       <View style={styles.section}>
         <View accessibilityLabel={step === 'finalizing' ? 'Checking the recording' : 'Saving'} accessibilityRole="progressbar" style={styles.requestingRow}>
-          <ActivityIndicator color={theme.primary} size="small" />
+          {reduceMotion ? null : <ActivityIndicator color={theme.primary} size="small" />}
           <Text style={[styles.requestingText, { color: theme.muted }]}>
             {step === 'finalizing' ? 'Checking the recording…' : 'Saving…'}
           </Text>
@@ -546,7 +560,13 @@ export function CaptureFlow({
           Review the answer
         </Text>
         <View style={styles.playRow}>
-          <ActionButton label={playing ? 'Pause' : 'Play'} variant="secondary" onPress={() => void togglePlayback()} theme={theme} />
+          <ActionButton
+            label={playing ? 'Pause' : 'Play'}
+            variant="secondary"
+            accessibilityHint={playing ? 'Pauses playback of this unsaved recording' : 'Plays this unsaved recording'}
+            onPress={() => void togglePlayback()}
+            theme={theme}
+          />
         </View>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <ScrollView keyboardShouldPersistTaps="handled">
@@ -595,6 +615,7 @@ export function CaptureFlow({
         </Text>
         <Text style={[styles.stepBody, { color: theme.muted }]}>
           The answer is kept on this phone and now appears in the memories list.
+          {` ${LOCAL_LOSS_SUMMARY}`}
         </Text>
         <View style={styles.action}>
           <ActionButton label="Done" onPress={finish} theme={theme} />
@@ -635,7 +656,13 @@ export function CaptureFlow({
       ) : null}
 
       <View style={styles.action}>
-        <ActionButton label="Save transcript" disabled={!canSaveManual} onPress={() => void saveManual()} theme={theme} />
+        <ActionButton
+          label="Save transcript"
+          accessibilityHint="Saves written words only on this phone"
+          disabled={!canSaveManual}
+          onPress={() => void saveManual()}
+          theme={theme}
+        />
         <ActionButton label="Not now" variant="secondary" onPress={cancel} theme={theme} />
       </View>
     </View>

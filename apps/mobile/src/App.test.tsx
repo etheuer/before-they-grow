@@ -1,3 +1,4 @@
+import { StyleSheet } from 'react-native'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import {
@@ -1009,7 +1010,99 @@ describe('protected area', () => {
     expect(await screen.findByText('What happened today that made you feel proud?')).toBeOnTheScreen()
     expect(area.bootstrapCalls).toBe(2)
   })
+
+  it('discloses local-only storage and no-recovery limits on onboarding, capture, settings, and deletion', async () => {
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      memories: [memoryEntry('keep-me', '2026-08-11', 'I made my bed.')],
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    expect(screen.getByText(/Memories stay on this phone, no cloud backup, no recovery/)).toBeOnTheScreen()
+    expect(screen.queryByRole('button', { name: /sign in|export|share|subscribe|create account/i })).toBeNull()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    expect(screen.getAllByText(/Memories stay on this phone, no cloud backup, no recovery/).length).toBeGreaterThan(0)
+    await fireEvent.press(screen.getByRole('button', { name: 'Not now' }))
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('Settings')).toBeOnTheScreen()
+    expect(screen.getByText(/Memories stay on this phone, no cloud backup, no recovery/)).toBeOnTheScreen()
+    expect(screen.getByText(/no account, sharing, cloud sync, ads, billing, or analytics/i)).toBeOnTheScreen()
+    expect(screen.getByText(/You must be a parent or guardian with permission to record/)).toBeOnTheScreen()
+    expect(screen.queryByRole('button', { name: /export|share|sign in|subscribe/i })).toBeNull()
+
+    await fireEvent.press(screen.getByRole('button', { name: "Back to tonight's question" }))
+    await fireEvent.press(await screen.findByRole('button', { name: 'View 1 memory' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Remove this memory' }))
+    expect(screen.getAllByText(/Memories stay on this phone, no cloud backup, no recovery/).length).toBeGreaterThan(0)
+    expect(area.hardDeletes).toEqual([])
+  })
+
+  it('gives core actions a 44pt target, visible label, role, state, and hint', async () => {
+    const voice = {
+      ...memoryEntry('v1', '2026-08-11', ''),
+      kind: 'voice' as const,
+      reviewedTranscript: '',
+      media: { relativePath: 'media/v1.m4a', byteCount: 1000, sha256: 'abc' },
+    }
+    await renderShell(
+      fakeAuthentication('available', ['authenticated']),
+      fakeProtectedArea({ initial: homeWithProfile, memories: [voice] }),
+    )
+    await screen.findByText('What happened today that made you feel proud?')
+
+    const record = screen.getByRole('button', { name: 'Record their voice' })
+    expect(record.props.accessibilityRole).toBe('button')
+    expect(record.props.accessibilityHint).toMatch(/microphone/i)
+    expect(minTapHeight(record)).toBeGreaterThanOrEqual(44)
+
+    await fireEvent.press(screen.getByRole('button', { name: 'View 1 memory' }))
+    const play = screen.getByRole('button', { name: 'Play this memory' })
+    expect(play.props.accessibilityHint).toMatch(/play/i)
+    expect(minTapHeight(play)).toBeGreaterThanOrEqual(44)
+    expect(screen.getByText('Play')).toBeOnTheScreen()
+
+    const back = screen.getByRole('button', { name: "Back to tonight's question" })
+    expect(minTapHeight(back)).toBeGreaterThanOrEqual(44)
+  })
+
+  it('walks unlock, onboarding, manual save, timeline, and settings without forbidden affordances', async () => {
+    const area = fakeProtectedArea({ homeAfterCreate: homeWithProfile, permission: 'unavailable' })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+
+    expect(await screen.findByText('Set up your family space')).toBeOnTheScreen()
+    expect(screen.getByText(/Memories stay on this phone, no cloud backup, no recovery/)).toBeOnTheScreen()
+    await fireEvent.changeText(screen.getByLabelText('Child first name or nickname'), 'Mila')
+    await fireEvent.press(screen.getByRole('radio', { name: '6 to 8 years' }))
+    expect(screen.getByRole('radio', { name: '6 to 8 years' }).props.accessibilityState.checked).toBe(true)
+    await fireEvent.press(screen.getByRole('checkbox', { name: 'I am an adult' }))
+    await fireEvent.press(screen.getByRole('checkbox', { name: 'I have permission to record' }))
+    await fireEvent.press(screen.getByRole('button', { name: "Start tonight's question" }))
+
+    expect(await screen.findByText('What happened today that made you feel proud?')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('No voice was captured')).toBeOnTheScreen()
+    await fireEvent.changeText(screen.getByLabelText('Their answer in writing'), 'I made my bed.')
+    await fireEvent.press(screen.getByRole('button', { name: 'Save transcript' }))
+    expect(await screen.findByText('Saved')).toBeOnTheScreen()
+    expect(screen.getAllByText(/Memories stay on this phone, no cloud backup, no recovery/).length).toBeGreaterThan(0)
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Done' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('Privacy')).toBeOnTheScreen()
+    expect(screen.getByText('Terms')).toBeOnTheScreen()
+    expect(screen.queryByText(/Create account|Share with family|Subscribe/i)).toBeNull()
+    expect(area.savedManual).toHaveLength(1)
+  })
 })
+
+function minTapHeight(element: { props: { style?: unknown } }): number {
+  const flat = StyleSheet.flatten(element.props.style) as { minHeight?: number } | undefined
+  return typeof flat?.minHeight === 'number' ? flat.minHeight : 0
+}
 
 function memoryEntry(id: string, localDate: string, transcript: string): MemoryEntryV1 {
   return {

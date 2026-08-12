@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import type { UnavailableReason } from '@before-they-grow/application'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import { ActionButton } from './components/ActionButton'
+import { LOCAL_LOSS_SUMMARY } from './copy'
 import { formatDisplayDate } from './format'
 import type { Theme } from './theme'
 
@@ -50,14 +51,16 @@ function MemoryRow({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={playing ? 'Pause this memory' : 'Play this memory'}
+            accessibilityHint={playing ? 'Pauses this saved voice' : 'Plays this saved voice'}
+            accessibilityState={{ selected: playing }}
             onPress={onTogglePlay}
             style={({ pressed }) => [
               styles.playButton,
-              { backgroundColor: theme.quietAccent },
+              { backgroundColor: theme.quietAccent, borderColor: theme.border },
               pressed ? styles.pressed : null,
             ]}
           >
-            <Text style={[styles.playLabel, { color: theme.text }]}>{playing ? '❚❚' : '▶'}</Text>
+            <Text style={[styles.playLabel, { color: theme.text }]}>{playing ? 'Pause' : 'Play'}</Text>
           </Pressable>
         ) : null}
       </View>
@@ -81,11 +84,12 @@ function MemoryRow({
             <Text style={[styles.confirmCopy, { color: theme.text }]}>
               Hard local deletion of “{memoryLabel(memory)}” from{' '}
               {formatDisplayDate(memory.localDate)}. This permanently removes it from this
-              phone. It cannot be undone or recovered. This is not forensic erasure of the
-              device storage.
+              phone. {LOCAL_LOSS_SUMMARY} It cannot be undone or recovered. This is not
+              forensic erasure of the device storage.
             </Text>
             <ActionButton
               label="Delete permanently"
+              accessibilityHint="Permanently removes this memory from this phone"
               onPress={onHardDelete}
               theme={theme}
             />
@@ -150,6 +154,7 @@ export function TimelineScreen({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Back to tonight's question"
+              accessibilityHint="Returns to tonight's question"
               onPress={onBack}
               style={({ pressed }) => [
                 styles.backButton,
@@ -216,12 +221,13 @@ export function TimelineScreen({
               <>
                 <Text style={[styles.emptyBody, { color: theme.muted }]}>
                   Permanently remove {childNickname}'s profile, every transcript, and every
-                  recording from this phone. This cannot be undone or recovered.
+                  recording from this phone. {LOCAL_LOSS_SUMMARY} This cannot be undone or recovered.
                 </Text>
                 <View style={styles.emptyAction}>
                   <ActionButton
                     label="Delete everything"
                     variant="secondary"
+                    accessibilityHint="Starts Hard local deletion of all family content on this phone"
                     onPress={() => setDeleteAllStep(1)}
                     theme={theme}
                   />
@@ -289,7 +295,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: 999,
     borderWidth: 1,
-    minHeight: 40,
+    minHeight: 44,
+    minWidth: 44,
     paddingHorizontal: 14,
     justifyContent: 'center',
   },
@@ -302,11 +309,13 @@ const styles = StyleSheet.create({
   playButton: {
     alignItems: 'center',
     borderRadius: 999,
-    height: 40,
+    borderWidth: 1,
     justifyContent: 'center',
-    width: 40,
+    minHeight: 44,
+    minWidth: 44,
+    paddingHorizontal: 14,
   },
-  playLabel: { fontSize: 14, fontWeight: '800' },
+  playLabel: { fontSize: 15, fontWeight: '800' },
   memoryCard: { borderRadius: 16, borderWidth: 1, padding: 16 },
   memoryDate: { fontSize: 13, fontWeight: '800', textTransform: 'uppercase' },
   memoryQuestion: { fontSize: 15, lineHeight: 22, marginTop: 8 },

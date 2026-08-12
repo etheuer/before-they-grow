@@ -24,6 +24,7 @@ import { createExpoLifecyclePort } from './adapters/expoLifecycle'
 import { ActionButton } from './components/ActionButton'
 import { ProtectedArea } from './ProtectedArea'
 import { darkTheme, useTheme, type Theme } from './theme'
+import { useReducedMotion } from './useReducedMotion'
 import type { ProtectedAreaServices } from './services'
 
 type LockedNativeShellProps = {
@@ -110,6 +111,7 @@ function LockScreen({
   onOpenDeviceSettings,
 }: LockScreenProps) {
   const theme = useTheme()
+  const reduceMotion = useReducedMotion()
   const content = lockContent[status]
   const checking = status === 'authenticating'
   const setupRequired = status === 'setup-required'
@@ -142,13 +144,14 @@ function LockScreen({
                 accessibilityRole="progressbar"
                 style={styles.progress}
               >
-                <ActivityIndicator color={theme.primary} size="small" />
+                {reduceMotion ? null : <ActivityIndicator color={theme.primary} size="small" />}
                 <Text style={[styles.progressText, { color: theme.muted }]}>Checking your phone’s security…</Text>
               </View>
             ) : setupRequired ? (
               <View style={styles.actions}>
                 <ActionButton
                   label="Open device settings"
+                  accessibilityHint="Opens the phone settings so you can set a passcode"
                   onPress={() => {
                     void onOpenDeviceSettings().catch(() => undefined)
                   }}
@@ -156,6 +159,7 @@ function LockScreen({
                 />
                 <ActionButton
                   label="Check again"
+                  accessibilityHint="Checks whether this phone can unlock the family space"
                   onPress={onRetry}
                   theme={theme}
                   variant="secondary"
@@ -163,7 +167,12 @@ function LockScreen({
               </View>
             ) : status === 'locked' ? (
               <View style={styles.actions}>
-                <ActionButton label="Try again" onPress={onRetry} theme={theme} />
+                <ActionButton
+                  label="Try again"
+                  accessibilityHint="Shows the phone unlock prompt again"
+                  onPress={onRetry}
+                  theme={theme}
+                />
               </View>
             ) : null}
           </View>

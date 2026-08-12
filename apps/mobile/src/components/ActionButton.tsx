@@ -7,6 +7,7 @@ type ActionButtonProps = {
   theme: Theme
   variant?: 'primary' | 'secondary'
   disabled?: boolean
+  accessibilityHint?: string
 }
 
 /**
@@ -20,12 +21,14 @@ export function ActionButton({
   theme,
   variant = 'primary',
   disabled = false,
+  accessibilityHint,
 }: ActionButtonProps) {
   const secondary = variant === 'secondary'
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ disabled }}
+      accessibilityHint={accessibilityHint}
       disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [
@@ -70,5 +73,6 @@ const styles = StyleSheet.create({
   buttonLabel: {
     fontSize: 17,
     fontWeight: '700',
+    textAlign: 'center',
   },
 })

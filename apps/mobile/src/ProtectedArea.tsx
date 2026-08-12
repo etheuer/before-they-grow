@@ -21,9 +21,12 @@ import type { UnavailableMemory, UnavailableReason } from '@before-they-grow/app
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import type { ProtectedAreaServices, ProtectedBootstrapState } from './services'
 import { ActionButton } from './components/ActionButton'
+import { LocalLossNote } from './components/LocalLossNote'
 import { CaptureFlow } from './CaptureFlow'
+import { SettingsScreen } from './SettingsScreen'
 import { TimelineScreen } from './TimelineScreen'
 import { darkTheme, useTheme, type Theme } from './theme'
+import { useReducedMotion } from './useReducedMotion'
 
 const AGE_BAND_CHOICES: ReadonlyArray<{ value: AgeBand; label: string }> = AGE_BANDS.map(
   (value) => ({
@@ -142,7 +145,7 @@ function HomeShell({
   onStorageBlocked: () => void
 }) {
   const theme = useTheme()
-  const [screen, setScreen] = useState<'tonight' | 'memories'>('tonight')
+  const [screen, setScreen] = useState<'tonight' | 'memories' | 'settings'>('tonight')
   const [memories, setMemories] = useState<MemoryEntryV1[]>([])
   const [loadFailed, setLoadFailed] = useState(false)
   const [playingId, setPlayingId] = useState<string | null>(null)
@@ -262,11 +265,22 @@ function HomeShell({
     )
   }
 
+  if (screen === 'settings') {
+    return (
+      <SettingsScreen
+        childNickname={profile.childNickname}
+        onBack={() => setScreen('tonight')}
+        theme={theme}
+      />
+    )
+  }
+
   return (
     <TonightScreen
       childNickname={profile.childNickname}
       ageBand={profile.ageBand}
       prompt={prompt}
+      onOpenSettings={() => setScreen('settings')}
       memoriesCount={memories.length}
       theme={theme}
       services={services}
@@ -279,6 +293,7 @@ function HomeShell({
 
 function LoadingScreen() {
   const theme = useTheme()
+  const reduceMotion = useReducedMotion()
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
       <StatusBar style={theme === darkTheme ? 'light' : 'dark'} />
@@ -287,7 +302,11 @@ function LoadingScreen() {
         accessibilityRole="progressbar"
         style={styles.center}
       >
-        <ActivityIndicator color={theme.primary} size="small" />
+        {reduceMotion ? (
+          <Text style={{ color: theme.muted }}>Opening your family space</Text>
+        ) : (
+          <ActivityIndicator color={theme.primary} size="small" />
+        )}
       </View>
     </SafeAreaView>
   )
@@ -438,6 +457,7 @@ function OnboardingScreen({
                     accessibilityRole="radio"
                     accessibilityState={{ checked: selected }}
                     accessibilityLabel={`${choice.label} years`}
+                    accessibilityHint={selected ? 'Selected age band' : 'Selects this age band'}
                     onPress={() => setDraft((draft) => ({ ...draft, ageBand: choice.value }))}
                     style={({ pressed }) => [
                       styles.choice,
@@ -490,18 +510,14 @@ function OnboardingScreen({
             <View style={styles.actions}>
               <ActionButton
                 label="Start tonight's question"
+                accessibilityHint="Creates the profile and opens tonight's question"
                 onPress={() => void submit()}
                 disabled={!canSubmit}
                 theme={theme}
               />
             </View>
 
-            <View style={[styles.localOnlyNote, { borderTopColor: theme.border }]}>
-              <Text style={[styles.localOnlyText, { color: theme.muted }]}>
-                Memories are stored only on this phone and are not backed up by Apple, Google, or
-                Before They Grow. There is no cloud account.
-              </Text>
-            </View>
+            <LocalLossNote theme={theme} />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -526,6 +542,7 @@ function ConsentToggle({
     <Pressable
       accessibilityRole="checkbox"
       accessibilityLabel={label}
+      accessibilityHint={hint}
       accessibilityState={{ checked }}
       onPress={onToggle}
       style={({ pressed }) => [
@@ -553,6 +570,7 @@ function TonightScreen({
   theme,
   services,
   onOpenTimeline,
+  onOpenSettings,
   onSaved,
   onStorageBlocked,
 }: {
@@ -563,6 +581,7 @@ function TonightScreen({
   theme: Theme
   services: ProtectedAreaServices
   onOpenTimeline: () => void
+  onOpenSettings: () => void
   onSaved: () => void
   onStorageBlocked: () => void
 }) {
@@ -590,7 +609,7 @@ function TonightScreen({
             <Text style={[styles.followUp, { color: theme.text }]}>{prompt.followUp}</Text>
           </View>
           <Text style={[styles.homeNote, { color: theme.muted }]}>
-            A calm minute with {childNickname}. Everything you save stays on this phone.
+            A calm minute with {childNickname}. Memories stay on this phone, no cloud backup, no recovery.
           </Text>
 
           <CaptureFlow
@@ -614,7 +633,15 @@ function TonightScreen({
                   : `View ${memoriesCount} ${memoriesCount === 1 ? 'memory' : 'memories'}`
               }
               variant="secondary"
+              accessibilityHint="Opens saved memories, newest first"
               onPress={onOpenTimeline}
+              theme={theme}
+            />
+            <ActionButton
+              label="Settings"
+              variant="secondary"
+              accessibilityHint="Opens privacy, terms, and local-only storage details"
+              onPress={onOpenSettings}
               theme={theme}
             />
           </View>
@@ -687,13 +714,7 @@ const styles = StyleSheet.create({
   consentLabel: { fontSize: 16, fontWeight: '700' },
   consentHint: { fontSize: 13, lineHeight: 18, marginTop: 2 },
   errorText: { fontSize: 15, fontWeight: '600', marginTop: 16 },
-  actions: { marginTop: 24 },
-  localOnlyNote: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    marginTop: 28,
-    paddingTop: 18,
-  },
-  localOnlyText: { fontSize: 13, lineHeight: 19 },
+  actions: { gap: 12, marginTop: 24 },
   blockedTitle: { fontSize: 34, fontWeight: '700', letterSpacing: -1, lineHeight: 40, marginTop: 40 },
   blockedMessage: { fontSize: 17, lineHeight: 25, marginTop: 14 },
   eyebrowRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 24 },
