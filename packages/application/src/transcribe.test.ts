@@ -8,17 +8,17 @@ import {
 function fakeTranscriber(
   outcomes: Array<TranscribeOutcome | 'deferred'> = [],
 ): TranscriberPort & {
-  called: Array<{ uri: string; sessionId: string }>
+  called: string[]
   cancelled: boolean
   resolveNext: (outcome: TranscribeOutcome) => void
 } {
   const state = {
-    called: [] as Array<{ uri: string; sessionId: string }>,
+    called: [] as string[],
     cancelled: false,
     pending: [] as Array<(outcome: TranscribeOutcome) => void>,
   }
   const port: TranscriberPort & {
-    called: Array<{ uri: string; sessionId: string }>
+    called: string[]
     cancelled: boolean
     resolveNext: (outcome: TranscribeOutcome) => void
   } = {
@@ -26,8 +26,8 @@ function fakeTranscriber(
     cancelled: state.cancelled,
     isOnDeviceAvailable: async () => true,
     requestPermissionIfNeeded: async () => true,
-    async transcribe(uri, sessionId) {
-      state.called.push({ uri, sessionId })
+    async transcribe(uri) {
+      state.called.push(uri)
       const outcome = outcomes[state.called.length - 1] ?? 'deferred'
       if (outcome === 'deferred') {
         return new Promise<TranscribeOutcome>((resolve) => {
@@ -56,9 +56,7 @@ describe('createTranscriptionCoordinator', () => {
       kind: 'draft',
       text: 'rainbow',
     })
-    expect(transcriber.called).toEqual([
-      { uri: 'file:///cache/rec.m4a', sessionId: '1' },
-    ])
+    expect(transcriber.called).toEqual(['file:///cache/rec.m4a'])
   })
 
   it('reports unavailable without falling back', async () => {
@@ -81,6 +79,13 @@ describe('createTranscriptionCoordinator', () => {
 
     transcriber.resolveNext({ kind: 'draft', text: 'current draft' })
     expect(await second).toEqual({ kind: 'draft', text: 'current draft' })
+  })
+
+  it('passes through a failed outcome without stalling', async () => {
+    const transcriber = fakeTranscriber([{ kind: 'failed' }])
+    const coordinator = createTranscriptionCoordinator({ transcriber })
+
+    expect(await coordinator.start('file:///cache/rec.m4a')).toEqual({ kind: 'failed' })
   })
 
   it('invalidate() supersedes any in-flight session', async () => {

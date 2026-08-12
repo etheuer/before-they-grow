@@ -17,8 +17,9 @@ export type TranscriberPort = {
   isOnDeviceAvailable(): Promise<boolean>
   /** Requests speech permission; only ever called after availability is confirmed. */
   requestPermissionIfNeeded(): Promise<boolean>
-  /** Starts on-device recognition of a completed audio file for a session. */
-  transcribe(uri: string, sessionId: string): Promise<TranscribeOutcome>
+  /** Starts on-device recognition of a completed audio file. */
+  transcribe(uri: string): Promise<TranscribeOutcome>
+  /** Cancels any in-flight recognition task. */
   cancel(): Promise<void>
 }
 
@@ -45,7 +46,7 @@ export function createTranscriptionCoordinator(deps: {
   return {
     async start(uri) {
       const myGeneration = ++generation
-      const outcome = await deps.transcriber.transcribe(uri, String(myGeneration))
+      const outcome = await deps.transcriber.transcribe(uri)
       if (generation !== myGeneration) return { kind: 'stale' }
       return outcome
     },

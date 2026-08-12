@@ -4,6 +4,9 @@ import process from 'node:process'
 
 const sourceRoots = ['apps/mobile', 'packages']
 const sourceExtensions = new Set(['.js', '.jsx', '.ts', '.tsx'])
+// Native source is scanned for the transcription policy only (a cloud STT SDK
+// cannot be imported there, but a raw network speech call could be authored).
+const nativeSourceExtensions = new Set(['.swift', '.kt'])
 const forbiddenSource = [
   ['React DOM', /(?:from\s+['"]react-dom(?:\/[^'"]*)?['"]|require\(['"]react-dom)/],
   ['browser globals', /\b(?:window|document|indexedDB|MediaRecorder)\b/],
@@ -49,6 +52,18 @@ for (const root of sourceRoots) {
     for (const [label, pattern] of patterns) {
       if (pattern.test(contents)) violations.push(`${file}: ${label}`)
     }
+    for (const [label, pattern] of forbiddenTranscription) {
+      if (pattern.test(contents)) violations.push(`${file}: forbidden ${label}`)
+    }
+  }
+}
+
+// Native modules (Swift/Kotlin) are scanned for the transcription policy too,
+// so an authored network speech call cannot hide outside the JS boundary.
+for (const root of sourceRoots) {
+  for (const file of await sourceFiles(root)) {
+    if (!nativeSourceExtensions.has(path.extname(file))) continue
+    const contents = await readFile(file, 'utf8')
     for (const [label, pattern] of forbiddenTranscription) {
       if (pattern.test(contents)) violations.push(`${file}: forbidden ${label}`)
     }

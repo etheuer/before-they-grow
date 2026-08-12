@@ -6,9 +6,13 @@ import Speech
  * files. `requiresOnDeviceRecognition` is always true: when the on-device
  * model is not supported the module reports unavailable and never starts a
  * network recognizer. Speech permission is requested only after availability
- * has been verified by the JS side.
+ * has been verified by the JS side. A defensive timeout and resume-once guard
+ * guarantee the JS promise always settles, and the active recognition task
+ * can be cancelled explicitly.
  */
 public class BtgTranscriptionModule: Module {
+  private var activeTask: SFSpeechRecognitionTask?
+
   public func definition() -> ModuleDefinition {
     Name("BtgTranscription")
 
@@ -27,7 +31,7 @@ public class BtgTranscriptionModule: Module {
       }
     }
 
-    AsyncFunction("transcribeFile") { (uri: String, sessionId: String) -> [String: String] in
+    AsyncFunction("transcribeFile") { (uri: String) -> [String: String] in
       guard let url = URL(string: uri),
         let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
         recognizer.supportsOnDeviceRecognition
@@ -43,22 +47,46 @@ public class BtgTranscriptionModule: Module {
       request.taskHint = .dictation
       request.requiresOnDeviceRecognition = true
 
-      do {
-        let result = try await withCheckedThrowingContinuation { continuation in
-          recognizer.recognitionTask(with: request) { result, error in
-            if let result, result.isFinal {
-              continuation.resume(returning: result.bestTranscription.formattedString)
-            } else if let error {
-              continuation.resume(throwing: error)
-            }
+      return try await withCheckedThrowingContinuation { continuation in
+        var resumed = false
+        let resumeOnce: (Result<String, Error>) -> Void = { result in
+          guard !resumed else { return }
+          resumed = true
+          switch result {
+          case .success(let text):
+            continuation.resume(returning: ["kind": "draft", "text": text])
+          case .failure:
+            continuation.resume(returning: ["kind": "failed"])
           }
         }
-        // The session id is returned untouched so the JS coordinator can
-        // discard results from superseded sessions.
-        return ["kind": "draft", "text": result, "sessionId": sessionId]
-      } catch {
-        return ["kind": "failed"]
+
+        let task = recognizer.recognitionTask(with: request) { result, error in
+          if let result, result.isFinal {
+            resumeOnce(.success(result.bestTranscription.formattedString))
+          } else if let error {
+            resumeOnce(.failure(error))
+          }
+          // A nil/nil update is an intermediate partial result; keep waiting
+          // for a final state or the timeout.
+        }
+        self.activeTask = task
+
+        // Defensive timeout: recognition of a bounded file should finish well
+        // inside a minute; a hung task must never leave the JS promise
+        // unresolved (and the UI stuck on "Transcribing…").
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+          task.cancel()
+          if self?.activeTask === task {
+            self?.activeTask = nil
+          }
+          resumeOnce(.failure(NSError(domain: "BtgTranscription", code: 1)))
+        }
       }
+    }
+
+    AsyncFunction("cancelTranscriptionFile") { () -> Void in
+      self.activeTask?.cancel()
+      self.activeTask = nil
     }
   }
 }

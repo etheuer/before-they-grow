@@ -28,18 +28,17 @@ function transcriptionNative() {
   return requireNativeModule('BtgTranscription') as {
     isOnDeviceAvailable(): Promise<boolean>
     requestPermission(): Promise<boolean>
-    transcribeFile(uri: string, sessionId: string): Promise<{
+    transcribeFile(uri: string): Promise<{
       kind: 'draft' | 'unavailable' | 'failed'
       text?: string
-      sessionId?: string
     }>
+    cancelTranscriptionFile(): Promise<void>
   }
 }
 
 export type TranscriptionNativeResult = {
   kind: 'draft' | 'unavailable' | 'failed'
   text?: string
-  sessionId?: string
 }
 
 export function isTranscriptionOnDeviceAvailable(): Promise<boolean> {
@@ -50,6 +49,10 @@ export function requestTranscriptionPermission(): Promise<boolean> {
   return transcriptionNative().requestPermission()
 }
 
-export function transcribeFile(uri: string, sessionId: string): Promise<TranscriptionNativeResult> {
-  return transcriptionNative().transcribeFile(uri, sessionId)
+export function transcribeFile(uri: string): Promise<TranscriptionNativeResult> {
+  return transcriptionNative().transcribeFile(uri)
+}
+
+export function cancelTranscriptionFile(): Promise<void> {
+  return transcriptionNative().cancelTranscriptionFile()
 }

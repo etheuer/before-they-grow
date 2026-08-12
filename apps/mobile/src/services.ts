@@ -172,7 +172,8 @@ export function createProtectedAreaServices(
       // Availability is verified before any speech permission is requested;
       // an unavailable platform never asks and never starts a recognizer.
       if (!(await transcriberPort.isOnDeviceAvailable())) return { kind: 'unavailable' }
-      await transcriberPort.requestPermissionIfNeeded()
+      const permitted = await transcriberPort.requestPermissionIfNeeded()
+      if (!permitted) return { kind: 'unavailable' }
       return transcriber.start(uri)
     },
     async cancelTranscription() {
