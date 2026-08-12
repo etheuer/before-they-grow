@@ -39,8 +39,6 @@ export function createExpoMediaStorePort(exclusion: BackupExclusionPort): MediaS
         await target.delete()
         throw new StorageGateError('backup-control-failed')
       }
-
-      return { relativePath }
     },
 
     async removeFinal(relativePath) {

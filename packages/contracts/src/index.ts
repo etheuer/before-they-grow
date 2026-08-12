@@ -37,10 +37,12 @@ export type PromptSnapshotV1 = {
 }
 
 /**
- * One row of the memory catalog. A text-only memory has no media reference
- * and a nonblank reviewed transcript; a voice memory carries validated media
- * metadata with an opaque relative path and an optional (possibly empty)
- * reviewed transcript.
+ * One entry in the v1 persistence contract's memory catalog. The contract is
+ * version 1 (see localPersistenceContractVersion); the SQLite catalog that
+ * carries it currently lives at schema user_version 2. A text-only memory has
+ * no media reference and a nonblank reviewed transcript; a voice memory
+ * carries validated media metadata with an opaque relative path and an
+ * optional (possibly empty) reviewed transcript.
  */
 export type MemoryEntryV1 = {
   id: string

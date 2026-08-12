@@ -60,6 +60,7 @@ function fakeProtectedArea(options: {
   bootstrapFailures?: number
   timelineFailures?: number
   captureResult?: ValidateCapturedAudioResult
+  saveVoiceResult?: 'saved' | 'duplicate' | 'save-failed'
 } = {}): ProtectedAreaServices & {
   creates: CreateProfileInput[]
   bootstrapCalls: number
@@ -170,6 +171,8 @@ function fakeProtectedArea(options: {
         reviewedTranscript: input.reviewedTranscript,
         validatedMediaUri: input.validatedMedia.uri,
       })
+      if (options.saveVoiceResult === 'duplicate') return { kind: 'duplicate' }
+      if (options.saveVoiceResult === 'save-failed') return { kind: 'save-failed' }
       const memory: MemoryEntryV1 = {
         id: `voice-${state.savedVoice.length}`,
         kind: 'voice',
@@ -577,6 +580,47 @@ describe('protected area', () => {
 
     await fireEvent.press(screen.getByRole('button', { name: 'Pause this memory' }))
     expect(screen.getByRole('button', { name: 'Play this memory' })).toBeOnTheScreen()
+  })
+
+  it('does not show a confirmation when a voice save is duplicative (indeterminate)', async () => {
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      permission: 'granted',
+      saveVoiceResult: 'duplicate',
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+    expect(await screen.findByText('Review the answer')).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Save voice' }))
+
+    expect(screen.queryByText('Saved')).toBeNull()
+    expect(await screen.findByText("This answer wasn't saved. Please try again.")).toBeOnTheScreen()
+  })
+
+  it('plays a just-saved voice memory from the protected timeline', async () => {
+    const area = fakeProtectedArea({ initial: homeWithProfile, permission: 'granted' })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+    expect(await screen.findByText('Review the answer')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Save voice' }))
+    expect(await screen.findByText('Saved')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Done' }))
+
+    await fireEvent.press(screen.getByRole('button', { name: 'View 1 memory' }))
+    expect(await screen.findByText('Voice memory')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Play this memory' }))
+    expect(area.played).toContain('media/voice-1.m4a')
   })
 
   it('shows an unexpected bootstrap failure as a blocked state and recovers on retry', async () => {

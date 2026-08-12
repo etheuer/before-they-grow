@@ -13,6 +13,7 @@ import {
 } from './capture'
 
 function fakeInspector(overrides: Partial<{
+  readable: boolean
   byteCount: number
   sha256: string
   decodable: boolean
@@ -22,6 +23,7 @@ function fakeInspector(overrides: Partial<{
   return {
     async inspect() {
       return {
+        readable: overrides.readable ?? true,
         byteCount: overrides.byteCount ?? 1000,
         sha256: overrides.sha256 ?? 'deadbeef',
         decodable: overrides.decodable ?? true,
@@ -43,8 +45,7 @@ function fakeMediaStore(): MediaStorePort & {
     failCommit: null,
     async commit(sourceUri, relativePath) {
       if (store.failCommit) throw store.failCommit
-      store.committed.push(sourceUri)
-      return { relativePath }
+      store.committed.push(`${sourceUri} -> ${relativePath}`)
     },
     async removeFinal(relativePath) {
       store.removed.push(relativePath)
@@ -96,6 +97,14 @@ describe('finalizeVoiceCapture', () => {
   it('accepts a decodable, in-policy, stable recording', async () => {
     const result = await finalizeVoiceCapture({ inspector: fakeInspector() }, captured)
     expect(result).toEqual({ kind: 'valid', media: voiceInput.validatedMedia })
+  })
+
+  it('rejects an unreadable recording without calling it empty', async () => {
+    const result = await finalizeVoiceCapture(
+      { inspector: fakeInspector({ readable: false }) },
+      captured,
+    )
+    expect(result).toEqual({ kind: 'unreadable' })
   })
 
   it('rejects a zero-byte recording', async () => {
@@ -154,7 +163,7 @@ describe('saveVoiceMemory', () => {
       media: { relativePath: 'media/memory-1.m4a', byteCount: 1000, sha256: 'deadbeef' },
       promptSnapshot: voiceInput.promptSnapshot,
     })
-    expect(store.committed).toEqual(['file:///cache/rec.m4a'])
+    expect(store.committed).toEqual(['file:///cache/rec.m4a -> media/memory-1.m4a'])
     expect(repo.memories).toHaveLength(1)
   })
 

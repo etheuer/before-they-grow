@@ -70,6 +70,9 @@ export function CaptureFlow({
 
   const cancel = () => {
     finalizeLock.current = false
+    // Always release the microphone so a cancelled recording cannot leak the
+    // session or block the next capture.
+    void services.cancelRecording()
     setStep('idle')
     setTranscript('')
     setReviewText('')
@@ -188,7 +191,7 @@ export function CaptureFlow({
         now: new Date(),
         validatedMedia: validated,
       })
-      if (result.kind === 'saved' || result.kind === 'duplicate') {
+      if (result.kind === 'saved') {
         setStep('saved')
         void services.stopPlayback()
         return
@@ -198,7 +201,9 @@ export function CaptureFlow({
         setStep('invalid')
         return
       }
-      setError('Something went wrong saving. Please try again.')
+      // A duplicate or write failure means this attempt saved nothing; the
+      // parent must not see a confirmation for an indeterminate outcome.
+      setError("This answer wasn't saved. Please try again.")
       setStep('review')
     } catch (cause) {
       if (cause instanceof StorageGateError) {
@@ -220,7 +225,7 @@ export function CaptureFlow({
         now: new Date(),
         recordingWasAvailable: false,
       })
-      if (result.kind === 'saved' || result.kind === 'duplicate') {
+      if (result.kind === 'saved') {
         setStep('saved')
         return
       }
@@ -229,7 +234,7 @@ export function CaptureFlow({
         setStep('manual')
         return
       }
-      setError('This answer needs voice capture to be unavailable first.')
+      setError("This answer wasn't saved. Please try again.")
       setStep('manual')
     } catch (cause) {
       if (cause instanceof StorageGateError) {
@@ -308,7 +313,7 @@ export function CaptureFlow({
           {formatClock(elapsedMs)}
         </Text>
         <Text style={[styles.stepBody, { color: theme.muted }]}>
-          Recording stops automatically at five minutes.
+          Recorded {formatClock(elapsedMs)} · {formatClock(300000 - elapsedMs)} remaining
         </Text>
         {error ? (
           <Text accessibilityLiveRegion="polite" style={[styles.errorText, { color: theme.primary }]}>

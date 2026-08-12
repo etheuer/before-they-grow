@@ -21,7 +21,29 @@ export function createExpoMediaInspectorPort(): MediaInspectorPort {
   return {
     async inspect(uri: string) {
       const file = new File(uri)
-      const firstRead = file.size ?? 0
+      let firstRead: number
+      try {
+        firstRead = file.size ?? 0
+        if (file.size === null) {
+          return {
+            readable: false,
+            byteCount: 0,
+            sha256: '',
+            decodable: false,
+            durationMs: 0,
+            stable: false,
+          }
+        }
+      } catch {
+        return {
+          readable: false,
+          byteCount: 0,
+          sha256: '',
+          decodable: false,
+          durationMs: 0,
+          stable: false,
+        }
+      }
 
       const bytes = await file.arrayBuffer()
       const secondRead = bytes.byteLength
@@ -58,6 +80,7 @@ export function createExpoMediaInspectorPort(): MediaInspectorPort {
       }
 
       return {
+        readable: true,
         byteCount: firstRead,
         sha256,
         decodable,

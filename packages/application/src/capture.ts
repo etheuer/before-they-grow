@@ -49,11 +49,13 @@ export type AudioRecorderPort = {
 
 /**
  * Platform-neutral view of a recorded media file: byte count (twice, for
- * stability), SHA-256, decodability, and duration. The concrete adapter reads
- * the file with expo-file-system and hashes with expo-crypto.
+ * stability), SHA-256, decodability, and duration. `readable` is false when
+ * the file is missing or its size cannot be read, so an unreadable capture is
+ * never misreported as empty.
  */
 export type MediaInspectorPort = {
   inspect(uri: string): Promise<{
+    readable: boolean
     byteCount: number
     sha256: string
     decodable: boolean
@@ -64,11 +66,11 @@ export type MediaInspectorPort = {
 
 /**
  * Commits a validated cache file into the canonical, backup-excluded media
- * area with an opaque relative path (never a family-bearing name). A commit
- * failure throws StorageGateError so the caller fails closed.
+ * area at the given opaque relative path (never a family-bearing name). A
+ * commit failure throws StorageGateError so the caller fails closed.
  */
 export type MediaStorePort = {
-  commit(sourceUri: string, relativePath: string): Promise<{ relativePath: string }>
+  commit(sourceUri: string, relativePath: string): Promise<void>
   /** Removes a committed file, used to compensate a failed database write. */
   removeFinal(relativePath: string): Promise<void>
   /** Absolute URI for playback of a stored relative path. */
@@ -89,6 +91,7 @@ export type AudioPlayerPort = {
 
 export type ValidateCapturedAudioResult =
   | { kind: 'valid'; media: ValidatedAudio }
+  | { kind: 'unreadable' }
   | { kind: 'empty' }
   | { kind: 'over-duration'; durationMs: number }
   | { kind: 'over-size'; byteCount: number }
@@ -101,6 +104,7 @@ export async function finalizeVoiceCapture(
 ): Promise<ValidateCapturedAudioResult> {
   const inspected = await deps.inspector.inspect(captured.uri)
 
+  if (!inspected.readable) return { kind: 'unreadable' }
   if (inspected.byteCount === 0) return { kind: 'empty' }
   if (!inspected.stable) return { kind: 'unstable' }
   if (!inspected.decodable) return { kind: 'not-decodable' }
@@ -156,15 +160,14 @@ export async function saveVoiceMemory(
   // The filename is an opaque id only; family content never enters filenames.
   const relativePath = `media/${id}.m4a`
 
-  let committed: { relativePath: string }
   try {
-    committed = await deps.mediaStore.commit(media.uri, relativePath)
+    await deps.mediaStore.commit(media.uri, relativePath)
   } catch {
     return { kind: 'save-failed' }
   }
 
   const reference: ManagedMediaReferenceV1 = {
-    relativePath: committed.relativePath,
+    relativePath,
     byteCount: media.byteCount,
     sha256: media.sha256,
   }

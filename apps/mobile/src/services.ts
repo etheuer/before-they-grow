@@ -83,15 +83,16 @@ export function createProtectedAreaServices(
   let repositorySet: RepositorySet | null = null
   let opening: Promise<RepositorySet> | null = null
 
+  // One backup-exclusion policy for the whole family root, shared by the
+  // catalog (inside getRepositorySet) and the media store.
+  const exclusion: BackupExclusionPort =
+    Platform.OS === 'ios' ? createIosBackupExclusion() : createAndroidBackupExclusion()
+
   const getRepositorySet = (): Promise<RepositorySet> => {
     if (repositorySet) return Promise.resolve(repositorySet)
     if (!opening) {
       opening = (async () => {
         const client = createExpoSqliteProfileClient()
-        const exclusion: BackupExclusionPort =
-          Platform.OS === 'ios'
-            ? createIosBackupExclusion()
-            : createAndroidBackupExclusion()
         const profile = createSqliteProfileRepository({
           client,
           exclusion,
@@ -110,9 +111,7 @@ export function createProtectedAreaServices(
   const recorder: AudioRecorderPort = createExpoAudioRecorderPort()
   const player: AudioPlayerPort = createExpoAudioPlayerPort()
   const inspector: MediaInspectorPort = createExpoMediaInspectorPort()
-  const mediaStore: MediaStorePort = createExpoMediaStorePort(
-    Platform.OS === 'ios' ? createIosBackupExclusion() : createAndroidBackupExclusion(),
-  )
+  const mediaStore: MediaStorePort = createExpoMediaStorePort(exclusion)
 
   return {
     async bootstrap(date = now()) {

@@ -13,15 +13,12 @@
 export const PROFILES_TABLE = 'profiles'
 export const MEMORIES_TABLE = 'memories'
 
-export const DATABASE_DDL_V2 = `
-CREATE TABLE IF NOT EXISTS profiles (
-  id TEXT PRIMARY KEY NOT NULL,
-  child_nickname TEXT NOT NULL CHECK (length(child_nickname) BETWEEN 1 AND 40),
-  age_band TEXT NOT NULL CHECK (age_band IN ('3-5', '6-8', '9-12')),
-  consented_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS memories (
+/**
+ * The memories table definition, shared by the current schema and the v1→v2
+ * migration rebuild, so a column change lands once.
+ */
+function memoriesTable(tableName: string): string {
+  return `CREATE TABLE IF NOT EXISTS ${tableName} (
   id TEXT PRIMARY KEY NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('text-only', 'voice')),
   prompt_id TEXT NOT NULL,
@@ -40,7 +37,19 @@ CREATE TABLE IF NOT EXISTS memories (
     (kind = 'text-only' AND length(reviewed_transcript) > 0 AND media_ref IS NULL)
     OR (kind = 'voice' AND media_ref IS NOT NULL)
   )
-);
+)`
+}
+
+const PROFILES_TABLE_DDL = `CREATE TABLE IF NOT EXISTS profiles (
+  id TEXT PRIMARY KEY NOT NULL,
+  child_nickname TEXT NOT NULL CHECK (length(child_nickname) BETWEEN 1 AND 40),
+  age_band TEXT NOT NULL CHECK (age_band IN ('3-5', '6-8', '9-12')),
+  consented_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+)`
+
+export const DATABASE_DDL_V2 = `${PROFILES_TABLE_DDL};
+${memoriesTable(MEMORIES_TABLE)};
 CREATE INDEX IF NOT EXISTS memories_saved_at_idx ON memories (saved_at DESC);
 `
 
@@ -51,27 +60,7 @@ CREATE INDEX IF NOT EXISTS memories_saved_at_idx ON memories (saved_at DESC);
  * copy inside the same transaction: nothing existing is deleted and the
  * profile catalog is untouched.
  */
-export const MIGRATION_MEMORIES_V1_TO_V2 = `
-CREATE TABLE IF NOT EXISTS memories_v2 (
-  id TEXT PRIMARY KEY NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('text-only', 'voice')),
-  prompt_id TEXT NOT NULL,
-  prompt_question TEXT NOT NULL,
-  prompt_follow_up TEXT NOT NULL,
-  prompt_age_band TEXT NOT NULL CHECK (prompt_age_band IN ('3-5', '6-8', '9-12')),
-  reviewed_transcript TEXT NOT NULL,
-  captured_at TEXT NOT NULL,
-  saved_at TEXT NOT NULL,
-  local_date TEXT NOT NULL,
-  time_zone TEXT NOT NULL,
-  media_ref TEXT,
-  media_byte_count INTEGER,
-  media_sha256 TEXT,
-  CHECK (
-    (kind = 'text-only' AND length(reviewed_transcript) > 0 AND media_ref IS NULL)
-    OR (kind = 'voice' AND media_ref IS NOT NULL)
-  )
-);
+export const MIGRATION_MEMORIES_V1_TO_V2 = `${memoriesTable('memories_v2')};
 INSERT INTO memories_v2 (
   id, kind, prompt_id, prompt_question, prompt_follow_up, prompt_age_band,
   reviewed_transcript, captured_at, saved_at, local_date, time_zone, media_ref,
