@@ -6,6 +6,12 @@ import type {
 } from '@before-they-grow/contracts'
 import type { RecordingPermissionState, MemoryRepositoryPort } from './memory'
 import { deviceTimeZone, localDateStamp } from './memory'
+import {
+  reliablySaveMemory,
+  type ReliableSaveResult,
+  type SaveJournalPort,
+  type SaveOperationIdentity,
+} from './saveReliability'
 
 /** Capture stops automatically at five minutes. */
 export const MAX_CAPTURE_DURATION_MS = 5 * 60 * 1000
@@ -69,12 +75,19 @@ export type MediaInspectorPort = {
 /**
  * Commits a validated cache file into the canonical, backup-excluded media
  * area at the given opaque relative path (never a family-bearing name). A
- * commit failure throws StorageGateError so the caller fails closed.
+ * failure before movement is Not saved; uncertainty after movement is
+ * Indeterminate so the journal can reconcile it.
  */
 export type MediaStorePort = {
+  /** Advisory capacity gate; it must never delete existing family content. */
+  preflight?(requiredBytes: number): Promise<void>
   commit(sourceUri: string, relativePath: string): Promise<void>
+  /** Rechecks a recognized final resource during bootstrap reconciliation. */
+  reconcileFinal?(relativePath: string): Promise<boolean>
   /** Removes a committed file, used to compensate a failed database write. */
   removeFinal(relativePath: string): Promise<void>
+  /** Best-effort removal of a cache recording after cancellation or relaunch. */
+  removeCache?(uri: string): Promise<void>
   /** Absolute URI for playback of a stored relative path. */
   resolve(relativePath: string): Promise<string>
 }
@@ -134,18 +147,20 @@ export type SaveVoiceMemoryInput = {
   reviewedTranscript: string
   now: Date
   validatedMedia: ValidatedAudio
+  /** Stable identity returned by a prior Not saved attempt. */
+  operation?: SaveOperationIdentity
+  /** Flat aliases kept for callers that persist the two identifiers separately. */
+  operationId?: string
+  memoryId?: string
 }
 
-export type SaveVoiceMemoryResult =
-  | { kind: 'saved'; memory: MemoryEntryV1 }
-  | { kind: 'invalid-audio' }
-  | { kind: 'duplicate' }
-  | { kind: 'save-failed' }
+export type SaveVoiceMemoryResult = ReliableSaveResult
 
 export type SaveVoiceMemoryDeps = {
   repository: MemoryRepositoryPort
   mediaStore: MediaStorePort
   generateId: () => string
+  journal?: SaveJournalPort
 }
 
 export async function saveVoiceMemory(
@@ -153,21 +168,29 @@ export async function saveVoiceMemory(
   input: SaveVoiceMemoryInput,
 ): Promise<SaveVoiceMemoryResult> {
   const media = input.validatedMedia
+  const fallbackId = input.operation?.memoryId ?? input.memoryId ?? deps.generateId()
+  const operation: SaveOperationIdentity = input.operation ?? {
+    operationId: input.operationId ?? fallbackId,
+    memoryId: fallbackId,
+    mediaSha256: media.sha256,
+  }
+  const retry = operation
+
   if (media.byteCount === 0 || media.byteCount > MAX_CAPTURE_BYTES) {
-    return { kind: 'invalid-audio' }
+    return { kind: 'not-saved', reason: 'invalid-audio', retry }
   }
-  if (media.durationMs > MAX_CAPTURE_DURATION_MS) return { kind: 'invalid-audio' }
+  if (media.durationMs > MAX_CAPTURE_DURATION_MS) {
+    return { kind: 'not-saved', reason: 'invalid-audio', retry }
+  }
+  if (operation.mediaSha256 !== media.sha256) {
+    return { kind: 'not-saved', reason: 'operation-conflict', retry }
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(operation.memoryId)) {
+    return { kind: 'not-saved', reason: 'operation-conflict', retry }
+  }
 
-  const id = deps.generateId()
   // The filename is an opaque id only; family content never enters filenames.
-  const relativePath = `media/${id}.m4a`
-
-  try {
-    await deps.mediaStore.commit(media.uri, relativePath)
-  } catch {
-    return { kind: 'save-failed' }
-  }
-
+  const relativePath = `media/${operation.memoryId}.m4a`
   const reference: ManagedMediaReferenceV1 = {
     relativePath,
     byteCount: media.byteCount,
@@ -176,7 +199,7 @@ export async function saveVoiceMemory(
 
   const now = input.now.toISOString()
   const memory: MemoryEntryV1 = {
-    id,
+    id: operation.memoryId,
     kind: 'voice' satisfies MemoryContentKind,
     promptSnapshot: input.promptSnapshot,
     reviewedTranscript: input.reviewedTranscript.trim(),
@@ -187,21 +210,21 @@ export async function saveVoiceMemory(
     media: reference,
   }
 
-  let outcome: 'created' | 'duplicate'
-  try {
-    outcome = await deps.repository.create(memory)
-  } catch {
-    // Compensate the committed media file so a failed database write does not
-    // leave an orphan under the family root.
-    await deps.mediaStore.removeFinal(relativePath)
-    return { kind: 'save-failed' }
-  }
-
-  if (outcome === 'duplicate') {
-    // This attempt's media file has no row referencing it; remove it so a
-    // duplicate id never orphans a file under the family root.
-    await deps.mediaStore.removeFinal(relativePath)
-    return { kind: 'duplicate' }
-  }
-  return { kind: 'saved', memory }
+  const result = await reliablySaveMemory(
+    {
+      repository: deps.repository,
+      mediaStore: deps.mediaStore,
+      journal: deps.journal ?? deps.repository.saveJournal,
+      preflight: deps.mediaStore.preflight
+        ? () => deps.mediaStore.preflight!(media.byteCount * 2 + 1024 * 1024)
+        : undefined,
+    },
+    {
+      memory,
+      identity: operation,
+      relativePath,
+      sourceUri: media.uri,
+    },
+  )
+  return result satisfies ReliableSaveResult
 }

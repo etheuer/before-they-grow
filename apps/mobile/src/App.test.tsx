@@ -63,7 +63,7 @@ function fakeProtectedArea(options: {
   timelineFailures?: number
   captureResult?: ValidateCapturedAudioResult
   captureSequence?: ValidateCapturedAudioResult[]
-  saveVoiceResult?: 'saved' | 'duplicate' | 'save-failed'
+  saveVoiceResult?: 'saved' | 'not-saved' | 'indeterminate' | 'conflict'
   transcription?: TranscriptionOutcome | 'deferred'
   initialUnsaved?: { audio: ValidatedAudio; reviewedText: string }
 } = {}): ProtectedAreaServices & {
@@ -84,7 +84,7 @@ function fakeProtectedArea(options: {
     memories: [...(options.memories ?? [])],
     timelineLoads: 0,
     transcribeResolvers: [] as Array<(outcome: TranscriptionOutcome) => void>,
-    unsaved: (options.initialUnsaved ?? null) as { audio: ValidatedAudio; reviewedText: string } | null,
+    unsaved: (options.initialUnsaved ?? null) as { audio: ValidatedAudio; reviewedText: string; operation?: import('@before-they-grow/application').SaveOperationIdentity; saveNow?: Date } | null,
   }
   const api: ProtectedAreaServices & {
     creates: CreateProfileInput[]
@@ -207,8 +207,24 @@ function fakeProtectedArea(options: {
         reviewedTranscript: input.reviewedTranscript,
         validatedMediaUri: input.validatedMedia.uri,
       })
-      if (options.saveVoiceResult === 'duplicate') return { kind: 'duplicate' }
-      if (options.saveVoiceResult === 'save-failed') return { kind: 'save-failed' }
+      if (options.saveVoiceResult === 'not-saved') {
+        return {
+          kind: 'not-saved',
+          reason: 'database-commit-failed',
+          retry: { operationId: 'fake-operation', memoryId: 'fake-memory', mediaSha256: input.validatedMedia.sha256 },
+        }
+      }
+      if (options.saveVoiceResult === 'indeterminate') {
+        return { kind: 'indeterminate', reason: 'database-commit-uncertain', operation: { operationId: 'fake-operation', memoryId: 'fake-memory', mediaSha256: input.validatedMedia.sha256 } }
+      }
+      if (options.saveVoiceResult === 'conflict') {
+        return {
+          kind: 'not-saved',
+          reason: 'conflict',
+          retry: { operationId: 'fake-operation', memoryId: 'fake-memory', mediaSha256: input.validatedMedia.sha256 },
+          conflict: { existing: memoryEntry('existing', '2026-08-10', 'Existing answer') },
+        }
+      }
       const memory: MemoryEntryV1 = {
         id: `voice-${state.savedVoice.length}`,
         kind: 'voice',
@@ -251,6 +267,9 @@ function fakeProtectedArea(options: {
     },
     consumeInterruptionNotice() {
       return false
+    },
+    consumeSaveReconciliationNotice() {
+      return []
     },
   }
   return api
@@ -638,7 +657,7 @@ describe('protected area', () => {
     const area = fakeProtectedArea({
       initial: homeWithProfile,
       permission: 'granted',
-      saveVoiceResult: 'duplicate',
+      saveVoiceResult: 'not-saved',
     })
     await renderShell(fakeAuthentication('available', ['authenticated']), area)
     await screen.findByText('What happened today that made you feel proud?')

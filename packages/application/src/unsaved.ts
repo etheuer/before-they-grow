@@ -1,4 +1,5 @@
 import type { ValidatedAudio } from './capture'
+import type { SaveOperationIdentity } from './saveReliability'
 import { finalizeVoiceCapture, type CapturedAudio, type MediaInspectorPort } from './capture'
 
 /**
@@ -9,6 +10,10 @@ import { finalizeVoiceCapture, type CapturedAudio, type MediaInspectorPort } fro
 export type UnsavedRecording = {
   audio: ValidatedAudio
   reviewedText: string
+  /** Stable save identity, if this candidate has already attempted saving. */
+  operation?: SaveOperationIdentity
+  /** The memory timestamps used by the first save attempt in this process. */
+  saveNow?: Date
 }
 
 export type TransientCaptureStore = {

@@ -35,6 +35,7 @@ export type StorageBlockReason =
   | 'integrity-failed'
   | 'root-unsafe'
   | 'backup-control-failed'
+  | 'save-indeterminate'
 
 export class StorageGateError extends Error {
   constructor(readonly reason: StorageBlockReason) {

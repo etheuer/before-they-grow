@@ -1,4 +1,5 @@
 import { Directory, File } from 'expo-file-system'
+import { cacheDirectory } from 'expo-file-system/legacy'
 
 /**
  * Removes stale capture-cache recordings left in the app cache directory by
@@ -9,9 +10,8 @@ import { Directory, File } from 'expo-file-system'
  */
 export async function cleanStaleCaptureCache(): Promise<void> {
   try {
-    const legacy = await import('expo-file-system/legacy')
-    if (!legacy.cacheDirectory) return
-    const cache = new Directory(legacy.cacheDirectory)
+    if (!cacheDirectory) return
+    const cache = new Directory(cacheDirectory)
     if (!cache.exists) return
     for (const entry of cache.list()) {
       if (entry instanceof File && entry.name.toLowerCase().endsWith('.m4a')) {

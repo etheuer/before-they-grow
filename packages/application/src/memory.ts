@@ -1,4 +1,10 @@
 import type { MemoryEntryV1, MemoryContentKind, PromptSnapshotV1 } from '@before-they-grow/contracts'
+import {
+  reliablySaveMemory,
+  type ReliableSaveResult,
+  type SaveJournalPort,
+  type SaveOperationIdentity,
+} from './saveReliability'
 
 /**
  * Result of requesting microphone permission at the moment the parent chooses
@@ -18,7 +24,11 @@ export type MemoryRepositoryPort = {
    * Persists a memory atomically and returns success only after the row is
    * queryable. Enforces primary-key idempotency.
    */
-  create(memory: MemoryEntryV1): Promise<'created' | 'duplicate'>
+  create(memory: MemoryEntryV1): Promise<'created' | 'duplicate' | 'conflict'>
+  /** Looks up one memory for idempotent retry and conflict detection. */
+  findById?(id: string): Promise<MemoryEntryV1 | null>
+  /** Durable save journal owned by the same catalog, when available. */
+  saveJournal?: SaveJournalPort
   /** Returns memories ordered newest first by save time. */
   findNewestFirst(): Promise<MemoryEntryV1[]>
 }
@@ -34,17 +44,23 @@ export type SaveManualMemoryInput = {
    * path).
    */
   recordingWasAvailable: boolean
+  /** Stable identity returned by a prior Not saved attempt. */
+  operation?: SaveOperationIdentity
+  /** Flat aliases kept for callers that persist the two identifiers separately. */
+  operationId?: string
+  memoryId?: string
 }
 
 export type SaveManualMemoryResult =
-  | { kind: 'saved'; memory: MemoryEntryV1 }
+  | ReliableSaveResult
   | { kind: 'invalid-transcript' }
   | { kind: 'recording-was-available' }
-  | { kind: 'duplicate' }
 
 export type SaveManualMemoryDeps = {
   repository: MemoryRepositoryPort
   generateId: () => string
+  journal?: SaveJournalPort
+  preflight?: () => Promise<void>
 }
 
 function pad2(value: number): string {
@@ -73,9 +89,15 @@ export async function saveManualMemory(
   if (reviewedTranscript.length === 0) return { kind: 'invalid-transcript' }
   if (input.recordingWasAvailable) return { kind: 'recording-was-available' }
 
+  const fallbackId = input.operation?.memoryId ?? input.memoryId ?? deps.generateId()
+  const operation: SaveOperationIdentity = input.operation ?? {
+    operationId: input.operationId ?? fallbackId,
+    memoryId: fallbackId,
+    mediaSha256: null,
+  }
   const now = input.now.toISOString()
   const memory: MemoryEntryV1 = {
-    id: deps.generateId(),
+    id: operation.memoryId,
     kind: 'text-only' satisfies MemoryContentKind,
     promptSnapshot: input.promptSnapshot,
     reviewedTranscript,
@@ -86,9 +108,19 @@ export async function saveManualMemory(
     media: null,
   }
 
-  const outcome = await deps.repository.create(memory)
-  if (outcome === 'duplicate') return { kind: 'duplicate' }
-  return { kind: 'saved', memory }
+  return reliablySaveMemory(
+    {
+      repository: deps.repository,
+      journal: deps.journal ?? deps.repository.saveJournal,
+      preflight: deps.preflight,
+    },
+    {
+      memory,
+      identity: operation,
+      relativePath: null,
+      sourceUri: null,
+    },
+  )
 }
 
 export async function loadMemoryTimeline(deps: {

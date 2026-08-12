@@ -184,7 +184,7 @@ describe('saveVoiceMemory', () => {
       { repository: repo, mediaStore: fakeMediaStore(), generateId: () => 'm' },
       { ...voiceInput, validatedMedia: { ...voiceInput.validatedMedia, byteCount: MAX_CAPTURE_BYTES + 1 } },
     )
-    expect(result).toEqual({ kind: 'invalid-audio' })
+    expect(result).toMatchObject({ kind: 'not-saved', reason: 'invalid-audio', retry: { memoryId: 'm', operationId: 'm' } })
     expect(repo.memories).toHaveLength(0)
   })
 
@@ -196,12 +196,12 @@ describe('saveVoiceMemory', () => {
       { repository: repo, mediaStore: store, generateId: () => 'm' },
       voiceInput,
     )
-    expect(result).toEqual({ kind: 'save-failed' })
+    expect(result).toMatchObject({ kind: 'not-saved', reason: 'database-commit-failed', retry: { memoryId: 'm', operationId: 'm' } })
     expect(store.removed).toEqual(['media/m.m4a'])
     expect(repo.memories).toHaveLength(0)
   })
 
-  it('reports duplicate and removes the orphaned media file', async () => {
+  it('retries the same identity idempotently without creating a duplicate or orphan', async () => {
     const repo = fakeMemoryRepository()
     const store = fakeMediaStore()
     const deps = { repository: repo, mediaStore: store, generateId: () => 'm' }
@@ -209,9 +209,10 @@ describe('saveVoiceMemory', () => {
 
     const second = await saveVoiceMemory(deps, voiceInput)
 
-    expect(second).toEqual({ kind: 'duplicate' })
+    expect(second.kind).toBe('saved')
     expect(repo.memories).toHaveLength(1)
-    expect(store.removed).toEqual(['media/m.m4a'])
+    expect(store.committed).toEqual(['file:///cache/rec.m4a -> media/m.m4a'])
+    expect(store.removed).toEqual([])
   })
 })
 

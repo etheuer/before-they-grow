@@ -12,6 +12,7 @@
  */
 export const PROFILES_TABLE = 'profiles'
 export const MEMORIES_TABLE = 'memories'
+export const SAVE_OPERATIONS_TABLE = 'save_operations'
 
 /**
  * The memories table definition, shared by the current schema and the v1→v2
@@ -40,6 +41,16 @@ function memoriesTable(tableName: string): string {
 )`
 }
 
+const SAVE_OPERATIONS_TABLE_DDL = `CREATE TABLE IF NOT EXISTS ${SAVE_OPERATIONS_TABLE} (
+  operation_id TEXT PRIMARY KEY NOT NULL,
+  memory_id TEXT NOT NULL UNIQUE,
+  media_sha256 TEXT,
+  relative_path TEXT,
+  memory_json TEXT NOT NULL,
+  phase TEXT NOT NULL CHECK (phase IN ('prepared', 'media-committed')),
+  created_at TEXT NOT NULL
+)`
+
 const PROFILES_TABLE_DDL = `CREATE TABLE IF NOT EXISTS profiles (
   id TEXT PRIMARY KEY NOT NULL,
   child_nickname TEXT NOT NULL CHECK (length(child_nickname) BETWEEN 1 AND 40),
@@ -51,6 +62,8 @@ const PROFILES_TABLE_DDL = `CREATE TABLE IF NOT EXISTS profiles (
 export const DATABASE_DDL_V2 = `${PROFILES_TABLE_DDL};
 ${memoriesTable(MEMORIES_TABLE)};
 CREATE INDEX IF NOT EXISTS memories_saved_at_idx ON memories (saved_at DESC);
+${SAVE_OPERATIONS_TABLE_DDL};
+CREATE INDEX IF NOT EXISTS save_operations_memory_idx ON ${SAVE_OPERATIONS_TABLE} (memory_id);
 `
 
 /**
@@ -74,4 +87,6 @@ FROM memories;
 DROP TABLE memories;
 ALTER TABLE memories_v2 RENAME TO memories;
 CREATE INDEX IF NOT EXISTS memories_saved_at_idx ON memories (saved_at DESC);
+${SAVE_OPERATIONS_TABLE_DDL};
+CREATE INDEX IF NOT EXISTS save_operations_memory_idx ON ${SAVE_OPERATIONS_TABLE} (memory_id);
 `

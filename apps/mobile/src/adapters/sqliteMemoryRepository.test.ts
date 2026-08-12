@@ -1,8 +1,22 @@
-import { StorageGateError } from '@before-they-grow/application'
+import {
+  SaveCapacityError,
+  SaveIndeterminateError,
+  StorageGateError,
+  type SaveOperationRecord,
+} from '@before-they-grow/application'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import { createSqliteMemoryRepository } from './sqliteMemoryRepository'
-import { DATABASE_DDL_V2, MEMORIES_TABLE, PROFILES_TABLE } from './sqliteSchema'
+import { DATABASE_DDL_V2, MEMORIES_TABLE, PROFILES_TABLE, SAVE_OPERATIONS_TABLE } from './sqliteSchema'
 import type { SqliteClientPort, SqliteTransactionPort } from './sqliteProfileRepository'
+
+type SaveOperationRow = {
+  operation_id: string
+  memory_id: string
+  media_sha256: string | null
+  relative_path: string | null
+  memory_json: string
+  phase: 'prepared' | 'media-committed'
+}
 
 type MemoryRow = {
   id: string
@@ -27,6 +41,9 @@ function fakeClient() {
     closed: false,
     tables: new Set<string>(),
     memories: [] as MemoryRow[],
+    operations: [] as SaveOperationRow[],
+    transactionFailure: null as Error | null,
+    hideVerification: false,
   }
   const client: SqliteClientPort = {
     async open() {
@@ -53,16 +70,28 @@ function fakeClient() {
       for (const statement of DATABASE_DDL_V2.split(';')) {
         if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
         if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
+        if (statement.includes(SAVE_OPERATIONS_TABLE)) state.tables.add(SAVE_OPERATIONS_TABLE)
       }
     },
     async getAll<T>(sql: string, params: readonly unknown[] = []) {
+      if (sql.includes(`FROM ${SAVE_OPERATIONS_TABLE}`)) {
+        return state.operations.filter((operation) =>
+          sql.includes('ORDER BY')
+            || operation.operation_id === params[0]
+            || operation.memory_id === params[1],
+        ).map((operation) => ({ ...operation })) as unknown as T[]
+      }
       if (sql.includes('FROM memories') && sql.includes('ORDER BY saved_at DESC')) {
         return [...state.memories]
           .sort((a, b) => b.saved_at.localeCompare(a.saved_at))
           .map((m) => ({ ...m })) as unknown as T[]
       }
-      if (sql.includes('WHERE id = ?')) {
+      if (sql.includes('SELECT id FROM memories')) {
+        if (state.hideVerification) return [] as T[]
         return state.memories.filter((m) => m.id === params[0]).map((m) => ({ id: m.id })) as T[]
+      }
+      if (sql.includes('FROM memories') && sql.includes('WHERE id = ?')) {
+        return state.memories.filter((m) => m.id === params[0]).map((m) => ({ ...m })) as unknown as T[]
       }
       throw new Error(`Unexpected query: ${sql}`)
     },
@@ -72,13 +101,40 @@ function fakeClient() {
           for (const statement of DATABASE_DDL_V2.split(';')) {
             if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
             if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
+            if (statement.includes(SAVE_OPERATIONS_TABLE)) state.tables.add(SAVE_OPERATIONS_TABLE)
           }
         },
         async run(sql: string, params: readonly unknown[] = []) {
           if (sql.includes('CREATE TABLE')) {
             throw new Error('DDL must go through exec, not run')
           }
+          if (sql.includes(`INSERT INTO ${SAVE_OPERATIONS_TABLE}`)) {
+            const [operation_id, memory_id, media_sha256, relative_path, memory_json, phase] = params
+            state.operations.push({
+              operation_id: String(operation_id),
+              memory_id: String(memory_id),
+              media_sha256: media_sha256 as string | null,
+              relative_path: relative_path as string | null,
+              memory_json: String(memory_json),
+              phase: phase as 'prepared' | 'media-committed',
+            })
+            return
+          }
+          if (sql.includes(`UPDATE ${SAVE_OPERATIONS_TABLE}`)) {
+            const [phase, operationId] = params
+            const operation = state.operations.find((entry) => entry.operation_id === operationId)
+            if (operation) operation.phase = phase as 'prepared' | 'media-committed'
+            return
+          }
+          if (sql.includes(`DELETE FROM ${SAVE_OPERATIONS_TABLE}`)) {
+            const operationId = params[0]
+            state.operations = state.operations.filter((entry) => entry.operation_id !== operationId)
+            return
+          }
           if (sql.includes('INSERT INTO memories')) {
+            if (state.transactionFailure && /(?:out of space|disk is full)/i.test(state.transactionFailure.message)) {
+              throw state.transactionFailure
+            }
             const [
               id, kind, prompt_id, prompt_question, prompt_follow_up,
               prompt_age_band, reviewed_transcript, captured_at, saved_at,
@@ -100,11 +156,17 @@ function fakeClient() {
               media_byte_count: media_byte_count as number | null,
               media_sha256: media_sha256 as string | null,
             })
+            if (state.transactionFailure) throw state.transactionFailure
             return
           }
           throw new Error(`Unexpected txn statement: ${sql}`)
         },
         async getAll<T2>(sql: string, params: readonly unknown[] = []) {
+          if (sql.includes(`FROM ${SAVE_OPERATIONS_TABLE}`)) {
+            return state.operations.filter((operation) =>
+              operation.operation_id === params[0] || operation.memory_id === params[1],
+            ).map((operation) => ({ ...operation })) as T2[]
+          }
           if (sql.includes('WHERE id = ?')) {
             return state.memories.filter((m) => m.id === params[0]).map((m) => ({ id: m.id })) as T2[]
           }
@@ -168,6 +230,63 @@ describe('createSqliteMemoryRepository', () => {
 
     expect(await repo.create({ ...memory })).toBe('duplicate')
     expect(state.memories).toHaveLength(1)
+  })
+
+  it('maps a database out-of-space failure to a Not saved capacity error', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    state.transactionFailure = new Error('database or disk is full')
+    const repo = createSqliteMemoryRepository(client)
+
+    await expect(repo.create(memory)).rejects.toEqual(new SaveCapacityError())
+    expect(state.memories).toHaveLength(0)
+  })
+
+  it('keeps a post-commit database uncertainty distinguishable from a pre-commit failure', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    state.transactionFailure = new SaveIndeterminateError('database-commit-uncertain')
+    const repo = createSqliteMemoryRepository(client)
+
+    await expect(repo.create(memory)).rejects.toEqual(
+      new SaveIndeterminateError('database-commit-uncertain'),
+    )
+    expect(state.memories).toHaveLength(1)
+  })
+
+  it('reports verification uncertainty after a row was committed', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    state.hideVerification = true
+    const repo = createSqliteMemoryRepository(client)
+
+    await expect(repo.create(memory)).rejects.toEqual(
+      new SaveIndeterminateError('post-commit-verification-failed'),
+    )
+    expect(state.memories).toHaveLength(1)
+  })
+
+  it('persists, advances, lists, and removes a save operation journal entry', async () => {
+    const { client } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    const operation: SaveOperationRecord = {
+      identity: {
+        operationId: 'operation-1',
+        memoryId: voiceMemory.id,
+        mediaSha256: voiceMemory.media?.sha256 ?? null,
+      },
+      relativePath: voiceMemory.media?.relativePath ?? null,
+      memory: voiceMemory,
+      phase: 'prepared',
+    }
+
+    const prepared = await repo.saveJournal?.prepare(operation)
+    expect(prepared?.kind).toBe('created')
+    await repo.saveJournal?.markMediaCommitted('operation-1')
+    expect((await repo.saveJournal?.listPending())?.[0].phase).toBe('media-committed')
+    await repo.saveJournal?.remove('operation-1')
+    expect(await repo.saveJournal?.listPending()).toEqual([])
   })
 
   it('persists a voice memory with media metadata and empty (audio-only) text', async () => {

@@ -44,6 +44,8 @@ const BLOCKED_COPY: Record<StorageBlockReason, string> = {
   'root-unsafe': 'The private storage area could not be reached.',
   'backup-control-failed':
     'We could not confirm your memories stay out of cloud backup.',
+  'save-indeterminate':
+    'A recent save could not be confirmed yet. We are checking it before showing your memories.',
 }
 
 type BootState =
@@ -237,7 +239,7 @@ function BlockedScreen({
   onRetry,
   retrying = false,
 }: {
-  reason: 'version-unsafe' | 'integrity-failed' | 'root-unsafe' | 'backup-control-failed'
+  reason: StorageBlockReason
   onRetry: () => void
   retrying?: boolean
 }) {

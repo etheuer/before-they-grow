@@ -5,7 +5,13 @@ import {
 } from '@before-they-grow/application'
 import type { NativeProfileV1 } from '@before-they-grow/contracts'
 import type { BackupExclusionPort } from './backupExclusion'
-import { DATABASE_DDL_V2, MEMORIES_TABLE, MIGRATION_MEMORIES_V1_TO_V2, PROFILES_TABLE } from './sqliteSchema'
+import {
+  DATABASE_DDL_V2,
+  MEMORIES_TABLE,
+  MIGRATION_MEMORIES_V1_TO_V2,
+  PROFILES_TABLE,
+  SAVE_OPERATIONS_TABLE,
+} from './sqliteSchema'
 
 /**
  * Narrows the expo-sqlite surface to exactly what the profile catalog needs,
@@ -108,9 +114,10 @@ export function createSqliteProfileRepository(
       // present an empty onboarding store.
       if (!hasProfiles) throw new StorageGateError('version-unsafe')
       const hasMemories = await client.tableExists(MEMORIES_TABLE)
-      if (!hasMemories) {
+      const hasSaveOperations = await client.tableExists(SAVE_OPERATIONS_TABLE)
+      if (!hasMemories || !hasSaveOperations) {
         // Additive, idempotent repair for a versioned catalog that somehow
-        // lost its memories table; nothing existing is touched.
+        // lost a reliability table; nothing existing is touched.
         await client.transaction(async (txn) => {
           await txn.exec(DATABASE_DDL_V2)
         })
@@ -118,7 +125,8 @@ export function createSqliteProfileRepository(
     }
     const profilesTable = await client.tableExists(PROFILES_TABLE)
     const memoriesTable = await client.tableExists(MEMORIES_TABLE)
-    if (!profilesTable || !memoriesTable) {
+    const saveOperationsTable = await client.tableExists(SAVE_OPERATIONS_TABLE)
+    if (!profilesTable || !memoriesTable || !saveOperationsTable) {
       throw new StorageGateError('version-unsafe')
     }
   }

@@ -10,7 +10,13 @@ import {
   View,
 } from 'react-native'
 import type { PromptSnapshotV1 } from '@before-they-grow/contracts'
-import { StorageGateError, MAX_CAPTURE_DURATION_MS, type ValidatedAudio } from '@before-they-grow/application'
+import {
+  SaveCapacityError,
+  StorageGateError,
+  MAX_CAPTURE_DURATION_MS,
+  type SaveOperationIdentity,
+  type ValidatedAudio,
+} from '@before-they-grow/application'
 import { ActionButton } from './components/ActionButton'
 import type { ProtectedAreaServices } from './services'
 import type { Theme } from './theme'
@@ -25,6 +31,7 @@ type CaptureStep =
   | 'review'
   | 'invalid'
   | 'saving'
+  | 'indeterminate'
   | 'saved'
 
 /** The reviewed candidate: a validated capture plus optional parent text. */
@@ -32,6 +39,8 @@ type Candidate = {
   uri: string
   validated: ValidatedAudio
   reviewText: string
+  operation?: SaveOperationIdentity
+  saveNow: Date
 }
 
 export type CaptureFlowProps = {
@@ -75,16 +84,27 @@ export function CaptureFlow({
   const [playing, setPlaying] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const finalizeLock = useRef(false)
+  const manualOperation = useRef<SaveOperationIdentity | undefined>(undefined)
+  const manualSaveNow = useRef<Date | undefined>(undefined)
 
   // Restore an in-process Unsaved recording after the App-lock transition,
   // and surface a one-time notice when an interrupted capture was not kept.
   useEffect(() => {
     const unsaved = services.getUnsavedRecording()
     if (unsaved && !candidate && step === 'idle') {
-      setCandidate({ uri: unsaved.audio.uri, validated: unsaved.audio, reviewText: unsaved.reviewedText })
+      setCandidate({
+        uri: unsaved.audio.uri,
+        validated: unsaved.audio,
+        reviewText: unsaved.reviewedText,
+        operation: unsaved.operation,
+        saveNow: unsaved.saveNow ? new Date(unsaved.saveNow) : new Date(),
+      })
       setStep('review')
     }
     if (services.consumeInterruptionNotice()) {
+      setInterruptionNotice(true)
+    }
+    if (services.consumeSaveReconciliationNotice().some((result) => result.kind === 'not-saved')) {
       setInterruptionNotice(true)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -122,6 +142,8 @@ export function CaptureFlow({
     if (candidate) {
       setStep('review')
     } else {
+      manualOperation.current = undefined
+      manualSaveNow.current = undefined
       setStep('idle')
     }
   }
@@ -134,6 +156,8 @@ export function CaptureFlow({
     void services.cancelTranscription()
     services.clearUnsavedRecording()
     setCandidate(null)
+    manualOperation.current = undefined
+    manualSaveNow.current = undefined
     setPlaying(false)
     setTranscribing(false)
     setError(null)
@@ -169,10 +193,16 @@ export function CaptureFlow({
     setStep('recording')
     try {
       await services.startRecording()
-    } catch {
+    } catch (cause) {
       setStep(candidate ? 'review' : 'manual')
-      if (candidate) setRetryNote('The microphone could not start. Your previous answer is still here.')
-      else setError('The microphone could not start. Save their answer in writing instead.')
+      if (cause instanceof SaveCapacityError) {
+        if (candidate) setRetryNote("There isn't enough free space. Your previous answer is still here.")
+        else setError("There isn't enough free space to start recording. Save their answer in writing instead.")
+      } else if (candidate) {
+        setRetryNote('The microphone could not start. Your previous answer is still here.')
+      } else {
+        setError('The microphone could not start. Save their answer in writing instead.')
+      }
     }
   }
 
@@ -205,9 +235,14 @@ export function CaptureFlow({
       const captured = await services.stopRecording()
       const result = await services.validateCapturedAudio(captured)
       if (result.kind === 'valid') {
-        const next: Candidate = { uri: captured.uri, validated: result.media, reviewText: '' }
+        const next: Candidate = {
+          uri: captured.uri,
+          validated: result.media,
+          reviewText: '',
+          saveNow: new Date(),
+        }
         setCandidate(next)
-        services.putUnsavedRecording({ audio: result.media, reviewedText: '' })
+        services.putUnsavedRecording({ audio: result.media, reviewedText: '', saveNow: next.saveNow })
         setStep('review')
         attemptTranscription(captured.uri)
       } else if (candidate) {
@@ -218,12 +253,17 @@ export function CaptureFlow({
       } else {
         setStep('invalid')
       }
-    } catch {
+    } catch (cause) {
       if (candidate) {
         setStep('review')
-        setRetryNote("The new recording couldn't be saved. Your previous answer is still here.")
+        setRetryNote(
+          cause instanceof SaveCapacityError
+            ? "There isn't enough free space. Your previous answer is still here."
+            : "The new recording couldn't be saved. Your previous answer is still here.",
+        )
       } else {
         setStep('invalid')
+        if (cause instanceof SaveCapacityError) setError("There isn't enough free space to save this recording.")
       }
     } finally {
       finalizeLock.current = false
@@ -236,7 +276,9 @@ export function CaptureFlow({
     setPlaying(false)
     setTranscribing(false)
     setElapsedMs(0)
-    // The prior candidate stays untouched until a start succeeds.
+    // An invalid first attempt has no candidate to preserve; remove its cache
+    // before starting another one. Replacement candidates remain untouched.
+    if (!candidate) services.clearUnsavedRecording()
     await startRecording()
   }
 
@@ -259,8 +301,9 @@ export function CaptureFlow({
       const result = await services.saveVoiceMemory({
         promptSnapshot,
         reviewedTranscript: withText ? candidate.reviewText : '',
-        now: new Date(),
+        now: candidate.saveNow,
         validatedMedia: candidate.validated,
+        operation: candidate.operation,
       })
       if (result.kind === 'saved') {
         services.clearUnsavedRecording()
@@ -269,15 +312,32 @@ export function CaptureFlow({
         void services.stopPlayback()
         return
       }
-      if (result.kind === 'invalid-audio') {
-        setStep('invalid')
-        services.clearUnsavedRecording()
-        setCandidate(null)
+      if (result.kind === 'indeterminate') {
+        setError("The save status is uncertain. We won't retry it as a new memory.")
+        setStep('indeterminate')
+        onStorageBlocked()
         return
       }
-      // Duplicate or write failure: this attempt saved nothing.
-      setError("This answer wasn't saved. Please try again.")
-      setStep('review')
+      if (result.kind === 'not-saved') {
+        if (result.conflict) {
+          setError('This save identity belongs to different content. Nothing was overwritten.')
+          setStep('review')
+          return
+        }
+        setCandidate((current) => (current ? { ...current, operation: result.retry } : current))
+        services.putUnsavedRecording({
+          audio: candidate.validated,
+          reviewedText: candidate.reviewText,
+          operation: result.retry,
+          saveNow: candidate.saveNow,
+        })
+        setError(
+          result.reason === 'low-storage'
+            ? "There isn't enough free space. Your answer is still here to retry or discard."
+            : "This answer wasn't saved. Please try again.",
+        )
+        setStep('review')
+      }
     } catch (cause) {
       if (cause instanceof StorageGateError) {
         onStorageBlocked()
@@ -295,10 +355,13 @@ export function CaptureFlow({
       const result = await services.saveManualMemory({
         promptSnapshot,
         reviewedTranscript: transcript,
-        now: new Date(),
+        now: manualSaveNow.current ?? (manualSaveNow.current = new Date()),
         recordingWasAvailable: false,
+        operation: manualOperation.current,
       })
       if (result.kind === 'saved') {
+        manualOperation.current = undefined
+        manualSaveNow.current = undefined
         setStep('saved')
         return
       }
@@ -309,6 +372,27 @@ export function CaptureFlow({
       }
       if (result.kind === 'recording-was-available') {
         setError('This answer needs voice capture to be unavailable first.')
+        setStep('manual')
+        return
+      }
+      if (result.kind === 'indeterminate') {
+        setError("The save status is uncertain. We won't retry it as a new memory.")
+        setStep('indeterminate')
+        onStorageBlocked()
+        return
+      }
+      if (result.kind === 'not-saved') {
+        if (result.conflict) {
+          setError('This save identity belongs to different content. Nothing was overwritten.')
+          setStep('manual')
+          return
+        }
+        manualOperation.current = result.retry
+        setError(
+          result.reason === 'low-storage'
+            ? "There isn't enough free space. Please try again when space is available."
+            : "This answer wasn't saved. Please try again.",
+        )
         setStep('manual')
         return
       }
@@ -328,6 +412,8 @@ export function CaptureFlow({
     finalizeLock.current = false
     void services.cancelTranscription()
     setTranscript('')
+    manualOperation.current = undefined
+    manualSaveNow.current = undefined
     setCandidate(null)
     setPlaying(false)
     setTranscribing(false)
@@ -417,6 +503,20 @@ export function CaptureFlow({
     )
   }
 
+  if (step === 'indeterminate') {
+    return (
+      <View style={styles.section}>
+        <Text accessibilityRole="header" style={[styles.stepTitle, { color: theme.text }]}>Save status is uncertain</Text>
+        <Text style={[styles.stepBody, { color: theme.muted }]}>
+          The phone may have committed this memory. We will not retry it as a new memory. Check the family space again after storage reconciliation.
+        </Text>
+        <View style={styles.action}>
+          <ActionButton label="Check save status" onPress={onStorageBlocked} theme={theme} />
+        </View>
+      </View>
+    )
+  }
+
   if (step === 'invalid') {
     return (
       <View style={styles.section}>
@@ -427,6 +527,9 @@ export function CaptureFlow({
           The audio was empty, too long, too large, or couldn't be read, so it
           was not saved. Nothing on this phone was changed.
         </Text>
+        {error ? (
+          <Text accessibilityLiveRegion="polite" style={[styles.errorText, { color: theme.primary }]}>{error}</Text>
+        ) : null}
         <View style={styles.action}>
           <ActionButton label="Record again" onPress={() => void recordAgain()} theme={theme} />
           <ActionButton label="Discard" variant="secondary" onPress={discard} theme={theme} />

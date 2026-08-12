@@ -4,7 +4,7 @@ import {
 } from '@before-they-grow/application'
 import type { NativeProfileV1 } from '@before-they-grow/contracts'
 import { createSqliteProfileRepository, type SqliteClientPort, type SqliteTransactionPort } from './sqliteProfileRepository'
-import { DATABASE_DDL_V2, MEMORIES_TABLE, PROFILES_TABLE } from './sqliteSchema'
+import { DATABASE_DDL_V2, MEMORIES_TABLE, PROFILES_TABLE, SAVE_OPERATIONS_TABLE } from './sqliteSchema'
 import type { BackupExclusionPort } from './backupExclusion'
 
 const USER_VERSION = 2
@@ -77,12 +77,14 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
       if (sql.includes('memories_v2')) {
         // A v1→v2 migration rebuilds the memories table in place.
         state.tables.add(MEMORIES_TABLE)
+        state.tables.add(SAVE_OPERATIONS_TABLE)
         return
       }
       if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL exec: ${sql}`)
       for (const statement of DATABASE_DDL_V2.split(';')) {
         if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
         if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
+        if (statement.includes(SAVE_OPERATIONS_TABLE)) state.tables.add(SAVE_OPERATIONS_TABLE)
       }
     },
     async getAll<T>(sql: string, _params?: readonly unknown[]) {
@@ -99,12 +101,14 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
         async exec(sql: string) {
           if (sql.includes('memories_v2')) {
             state.tables.add(MEMORIES_TABLE)
+            state.tables.add(SAVE_OPERATIONS_TABLE)
             return
           }
           if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL exec: ${sql}`)
           for (const statement of DATABASE_DDL_V2.split(';')) {
             if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
             if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
+            if (statement.includes(SAVE_OPERATIONS_TABLE)) state.tables.add(SAVE_OPERATIONS_TABLE)
           }
         },
         async run(sql: string, params: readonly unknown[] = []) {

@@ -9,10 +9,12 @@ import {
 } from './memory'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 
-function fakeMemoryRepository(): MemoryRepositoryPort & { memories: MemoryEntryV1[] } {
-  const repo: MemoryRepositoryPort & { memories: MemoryEntryV1[] } = {
+function fakeMemoryRepository(): MemoryRepositoryPort & { memories: MemoryEntryV1[]; failCreate: Error | null } {
+  const repo: MemoryRepositoryPort & { memories: MemoryEntryV1[]; failCreate: Error | null } = {
     memories: [],
+    failCreate: null,
     async create(memory) {
+      if (repo.failCreate) throw repo.failCreate
       if (repo.memories.some((m) => m.id === memory.id)) return 'duplicate'
       repo.memories.push(memory)
       return 'created'
@@ -68,6 +70,23 @@ describe('saveManualMemory', () => {
     )
     expect(blank).toEqual({ kind: 'invalid-transcript' })
     expect(repo.memories).toHaveLength(0)
+  })
+
+  it('returns Not saved on a database failure without touching prior memories', async () => {
+    const repo = fakeMemoryRepository()
+    await saveManualMemory(
+      { repository: repo, generateId: () => 'prior' },
+      { ...baseInput, operation: { operationId: 'prior', memoryId: 'prior', mediaSha256: null } },
+    )
+    repo.failCreate = new Error('database full')
+
+    const result = await saveManualMemory(
+      { repository: repo, generateId: () => 'new' },
+      { ...baseInput, operation: { operationId: 'new', memoryId: 'new', mediaSha256: null } },
+    )
+
+    expect(result).toMatchObject({ kind: 'not-saved', reason: 'database-commit-failed' })
+    expect(repo.memories.map((memory) => memory.id)).toEqual(['prior'])
   })
 
   it('refuses a text-only save when recording was available (no bypass)', async () => {

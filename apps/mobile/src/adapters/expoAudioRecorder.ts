@@ -1,6 +1,14 @@
 import { AppState } from 'react-native'
 import { AudioModule, IOSOutputFormat, AudioQuality } from 'expo-audio'
-import { MAX_CAPTURE_BYTES, MAX_CAPTURE_DURATION_MS, type AudioRecorderPort, type CapturedAudio, type RecorderStatus } from '@before-they-grow/application'
+import { File } from 'expo-file-system'
+import {
+  MAX_CAPTURE_BYTES,
+  MAX_CAPTURE_DURATION_MS,
+  SaveCapacityError,
+  type AudioRecorderPort,
+  type CapturedAudio,
+  type RecorderStatus,
+} from '@before-they-grow/application'
 import { createExpoRecordingPermissionPort } from './expoRecordingPermission'
 
 /**
@@ -12,6 +20,12 @@ import { createExpoRecordingPermissionPort } from './expoRecordingPermission'
  * privacy-sensitive lifecycle transition: an incoming call, audio-focus loss,
  * screen lock, or inactive/background transition.
  */
+function isOutOfSpace(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const message = 'message' in error && typeof error.message === 'string' ? error.message : ''
+  return /(?:out of space|no space|disk full|enospc)/i.test(message)
+}
+
 const VOICE_RECORDING_OPTIONS = {
   directory: 'cache' as const,
   extension: '.m4a',
@@ -84,8 +98,13 @@ export function createExpoAudioRecorderPort(): AudioRecorderPort {
     async start() {
       if (recorder) return
       const next = new AudioModule.AudioRecorder(VOICE_RECORDING_OPTIONS)
-      await next.prepareToRecordAsync()
-      next.record({ forDuration: MAX_CAPTURE_DURATION_MS / 1000 })
+      try {
+        await next.prepareToRecordAsync()
+        next.record({ forDuration: MAX_CAPTURE_DURATION_MS / 1000 })
+      } catch (error) {
+        if (isOutOfSpace(error)) throw new SaveCapacityError()
+        throw error
+      }
       recorder = next
       poller = setInterval(emit, 500)
     },
@@ -95,7 +114,8 @@ export function createExpoAudioRecorderPort(): AudioRecorderPort {
       if (!current) throw new Error('No active recording')
       try {
         await current.stop()
-      } catch {
+      } catch (error) {
+        if (isOutOfSpace(error)) throw new SaveCapacityError()
         // The recorder may have already finalized itself at the automatic
         // five-minute stop; the captured file is still readable below.
       }
@@ -108,10 +128,19 @@ export function createExpoAudioRecorderPort(): AudioRecorderPort {
       const current = release()
       emit()
       if (current) {
+        const uri = current.uri
         try {
           await current.stop()
         } catch {
-          // The cache file is discarded; nothing to persist.
+          // The cache file is still discarded below; nothing to persist.
+        }
+        if (uri) {
+          try {
+            const file = new File(uri)
+            if (file.exists) await file.delete()
+          } catch {
+            // Bootstrap cleanup is the final best-effort retry for this cache.
+          }
         }
       }
     },

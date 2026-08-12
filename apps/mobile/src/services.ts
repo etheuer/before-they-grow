@@ -5,6 +5,8 @@ import {
   finalizeVoiceCapture,
   loadMemoryTimeline,
   loadProtectedHomeState,
+  reconcileSaveOperations,
+  SaveReconciliationError,
   saveManualMemory,
   saveVoiceMemory,
   type AudioPlayerPort,
@@ -21,8 +23,10 @@ import {
   type RecordingPermissionState,
   type SaveManualMemoryInput,
   type SaveManualMemoryResult,
+  type SaveReconciliationResult,
   type SaveVoiceMemoryInput,
   type SaveVoiceMemoryResult,
+  StorageGateError,
   type TranscriptionOutcome,
   type UnsavedRecording,
   type ValidateCapturedAudioResult,
@@ -50,9 +54,14 @@ import { createTranscriptionCoordinator } from '@before-they-grow/application'
 import { cleanStaleCaptureCache } from './adapters/expoCacheCleanup'
 import { createExpoLifecyclePort } from './adapters/expoLifecycle'
 
+export type ProtectedBootstrapState = ProtectedHomeState & {
+  /** Save outcomes resolved before protected content becomes visible. */
+  reconciliation?: SaveReconciliationResult[]
+}
+
 export type ProtectedAreaServices = {
-  /** Opens and verifies family storage, then returns the protected-area state. */
-  bootstrap(date?: Date): Promise<ProtectedHomeState>
+  /** Opens, reconciles, and verifies family storage before returning state. */
+  bootstrap(date?: Date): Promise<ProtectedBootstrapState>
   /** Creates the single profile after onboarding consent. */
   createProfile(input: CreateProfileInput, date?: Date): Promise<CreateProfileResult>
   /** Requests microphone permission only after the parent chooses to record. */
@@ -61,6 +70,8 @@ export type ProtectedAreaServices = {
   saveManualMemory(input: SaveManualMemoryInput): Promise<SaveManualMemoryResult>
   /** Loads saved Local-only memories newest first. */
   loadMemoryTimeline(): Promise<MemoryEntryV1[]>
+  /** Takes and clears save results reconciled during the last bootstrap. */
+  consumeSaveReconciliationNotice(): SaveReconciliationResult[]
   // --- in-process Unsaved recording (survives the App-lock transition) ---
   getUnsavedRecording(): UnsavedRecording | null
   putUnsavedRecording(recording: UnsavedRecording): void
@@ -104,6 +115,8 @@ export function createProtectedAreaServices(
 ): ProtectedAreaServices {
   let repositorySet: RepositorySet | null = null
   let opening: Promise<RepositorySet> | null = null
+  let indeterminateStorage = false
+  let reconciliationNotice: SaveReconciliationResult[] = []
 
   // One backup-exclusion policy for the whole family root, shared by the
   // catalog (inside getRepositorySet) and the media store.
@@ -140,6 +153,21 @@ export function createProtectedAreaServices(
   const appLifecycle = createExpoLifecyclePort()
   let cleanedCacheThisProcess = false
   let interruptionNotice = false
+  let lastCaptureUri: string | null = null
+
+  const clearUnsaved = () => {
+    const current = unsaved.get()
+    unsaved.clear()
+    const uris = new Set([current?.audio.uri, lastCaptureUri])
+    lastCaptureUri = null
+    for (const uri of uris) {
+      if (uri) void mediaStore.removeCache?.(uri)
+    }
+  }
+
+  const assertStorageAvailable = () => {
+    if (indeterminateStorage) throw new StorageGateError('save-indeterminate')
+  }
 
   // An interrupted-but-valid capture is retained as an in-process Unsaved
   // recording for review after re-authentication, never persisted. A capture
@@ -161,8 +189,32 @@ export function createProtectedAreaServices(
         cleanedCacheThisProcess = true
         await cleanStaleCaptureCache()
       }
-      const { profile } = await getRepositorySet()
-      return loadProtectedHomeState({ repository: profile }, date)
+      const { profile, memory } = await getRepositorySet()
+      try {
+        await profile.open()
+        const reconciled = await reconcileSaveOperations({
+          repository: memory,
+          mediaStore,
+          journal: memory.saveJournal,
+        })
+        reconciliationNotice = reconciled
+        if (reconciled.length > 0) {
+          // A journaled operation is resolved now; its cache is no longer an
+          // immediate retry and must not reappear as an Unsaved candidate.
+          clearUnsaved()
+        }
+        indeterminateStorage = false
+        const state = await loadProtectedHomeState({ repository: profile }, date)
+        return { ...state, reconciliation: reconciled }
+      } catch (error) {
+        if (error instanceof StorageGateError) {
+          return { kind: 'storage-blocked', reason: error.reason }
+        }
+        if (error instanceof SaveReconciliationError) {
+          return { kind: 'storage-blocked', reason: 'save-indeterminate' }
+        }
+        throw error
+      }
     },
 
     consumeInterruptionNotice() {
@@ -171,20 +223,31 @@ export function createProtectedAreaServices(
       return notice
     },
 
+    consumeSaveReconciliationNotice() {
+      const notice = reconciliationNotice
+      reconciliationNotice = []
+      return notice
+    },
+
     getUnsavedRecording() {
       return unsaved.get()
     },
     putUnsavedRecording(recording) {
+      const prior = unsaved.get()
       unsaved.put(recording)
+      if (prior && prior.audio.uri !== recording.audio.uri) {
+        void mediaStore.removeCache?.(prior.audio.uri)
+      }
     },
     clearUnsavedRecording() {
-      unsaved.clear()
+      clearUnsaved()
     },
     subscribeLifecycle(listener) {
       return appLifecycle.subscribe(listener)
     },
 
     async createProfile(input, date = now()) {
+      assertStorageAvailable()
       const { profile } = await getRepositorySet()
       return createProfile({ repository: profile, generateId: () => Crypto.randomUUID() }, input, date)
     },
@@ -194,14 +257,20 @@ export function createProtectedAreaServices(
     },
 
     async saveManualMemory(input) {
+      assertStorageAvailable()
       const { memory } = await getRepositorySet()
       return saveManualMemory(
-        { repository: memory, generateId: () => Crypto.randomUUID() },
+        {
+          repository: memory,
+          generateId: () => Crypto.randomUUID(),
+          preflight: mediaStore.preflight ? () => mediaStore.preflight!(1024 * 1024) : undefined,
+        },
         input,
       )
     },
 
     async loadMemoryTimeline() {
+      assertStorageAvailable()
       const { memory } = await getRepositorySet()
       return loadMemoryTimeline({ repository: memory })
     },
@@ -222,6 +291,7 @@ export function createProtectedAreaServices(
       return recorder.subscribe(listener)
     },
     async validateCapturedAudio(captured) {
+      lastCaptureUri = captured.uri
       return finalizeVoiceCapture({ inspector }, captured)
     },
     async startTranscription(uri) {
@@ -239,18 +309,23 @@ export function createProtectedAreaServices(
       transcriber.invalidate()
     },
     async saveVoiceMemory(input) {
+      assertStorageAvailable()
       const { memory } = await getRepositorySet()
-      return saveVoiceMemory(
+      const result = await saveVoiceMemory(
         { repository: memory, mediaStore, generateId: () => Crypto.randomUUID() },
         input,
       )
+      if (result.kind === 'indeterminate') indeterminateStorage = true
+      return result
     },
     async playMemory(relativePath) {
+      assertStorageAvailable()
       const uri = await mediaStore.resolve(relativePath)
       await player.load(uri)
       await player.play()
     },
     async playUri(uri) {
+      assertStorageAvailable()
       await player.load(uri)
       await player.play()
     },

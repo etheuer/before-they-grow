@@ -31,6 +31,26 @@ export {
   type SaveManualMemoryResult,
 } from './memory'
 export {
+  SaveBoundaryError,
+  SaveCapacityError,
+  SaveConflictError,
+  SaveIndeterminateError,
+  type ReliableSaveResult,
+  type SaveIndeterminateReason,
+  type SaveJournalPort,
+  type SaveJournalPrepareResult,
+  type SaveNotSavedReason,
+  type SaveOutcome,
+  type SaveOperationIdentity,
+  type SaveOperationPhase,
+  type SaveOperationRecord,
+  type SaveReconciliationResult,
+  type SaveRetry,
+  reconcileSaveOperations,
+  SaveReconciliationError,
+  reliablySaveMemory,
+} from './saveReliability'
+export {
   MAX_CAPTURE_BYTES,
   MAX_CAPTURE_DURATION_MS,
   finalizeVoiceCapture,
