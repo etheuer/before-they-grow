@@ -21,7 +21,13 @@ export function createFamilyWipePort(deps: {
     closeCatalog: () => deps.closeCatalog(),
     async wipeFamilyContent() {
       await deps.store.wipeFamilyContent()
-      await (deps.cleanCache ?? cleanStaleCaptureCache)()
+      try {
+        await (deps.cleanCache ?? cleanStaleCaptureCache)()
+      } catch {
+        // A failed cache cleanup must not report success: the deletion
+        // blocks and retries rather than leaving recoverable content behind.
+        throw new Error('cache-cleanup-failed')
+      }
     },
     verifyWiped: () => deps.store.verifyWiped(),
   }
