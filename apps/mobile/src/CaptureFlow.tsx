@@ -75,7 +75,6 @@ export function CaptureFlow({
   const [playing, setPlaying] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const finalizeLock = useRef(false)
-  const lastStep = useRef(step)
 
   // Restore an in-process Unsaved recording after the App-lock transition,
   // and surface a one-time notice when an interrupted capture was not kept.
@@ -176,10 +175,6 @@ export function CaptureFlow({
       else setError('The microphone could not start. Save their answer in writing instead.')
     }
   }
-
-  useEffect(() => {
-    lastStep.current = step
-  }, [step])
 
   // Poll the recorder for the elapsed timer, the automatic five-minute stop,
   // and an interruption stop (lifecycle) — all finalize through the same path.
