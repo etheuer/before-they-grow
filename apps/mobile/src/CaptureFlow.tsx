@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native'
 import type { PromptSnapshotV1 } from '@before-they-grow/contracts'
-import { StorageGateError, type ValidatedAudio } from '@before-they-grow/application'
+import { StorageGateError, MAX_CAPTURE_DURATION_MS, type ValidatedAudio } from '@before-they-grow/application'
 import { ActionButton } from './components/ActionButton'
 import type { ProtectedAreaServices } from './services'
 import type { Theme } from './theme'
@@ -234,6 +234,11 @@ export function CaptureFlow({
         setStep('manual')
         return
       }
+      if (result.kind === 'recording-was-available') {
+        setError('This answer needs voice capture to be unavailable first.')
+        setStep('manual')
+        return
+      }
       setError("This answer wasn't saved. Please try again.")
       setStep('manual')
     } catch (cause) {
@@ -313,7 +318,8 @@ export function CaptureFlow({
           {formatClock(elapsedMs)}
         </Text>
         <Text style={[styles.stepBody, { color: theme.muted }]}>
-          Recorded {formatClock(elapsedMs)} · {formatClock(300000 - elapsedMs)} remaining
+          Recorded {formatClock(elapsedMs)} ·{' '}
+          {formatClock(Math.max(0, MAX_CAPTURE_DURATION_MS - elapsedMs))} remaining
         </Text>
         {error ? (
           <Text accessibilityLiveRegion="polite" style={[styles.errorText, { color: theme.primary }]}>
