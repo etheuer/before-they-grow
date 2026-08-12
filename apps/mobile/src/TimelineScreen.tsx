@@ -1,4 +1,5 @@
-import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import { ActionButton } from './components/ActionButton'
 import { formatDisplayDate } from './format'
@@ -28,12 +29,16 @@ export function TimelineScreen({
   childNickname,
   onBack,
   onAnswerTonight,
+  onRetry,
+  loadFailed,
   theme,
 }: {
   memories: MemoryEntryV1[]
   childNickname: string
   onBack: () => void
   onAnswerTonight: () => void
+  onRetry: () => void
+  loadFailed: boolean
   theme: Theme
 }) {
   return (
@@ -65,7 +70,19 @@ export function TimelineScreen({
             Saved newest first, kept only on this phone.
           </Text>
 
-          {memories.length === 0 ? (
+          {loadFailed ? (
+            <View style={[styles.emptyCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+              <Text accessibilityRole="header" style={[styles.emptyTitle, { color: theme.text }]}>
+                Couldn't load your memories
+              </Text>
+              <Text style={[styles.emptyBody, { color: theme.muted }]}>
+                Reading saved memories failed this time. Nothing was changed on this phone.
+              </Text>
+              <View style={styles.emptyAction}>
+                <ActionButton label="Try again" onPress={onRetry} theme={theme} />
+              </View>
+            </View>
+          ) : memories.length === 0 ? (
             <View style={[styles.emptyCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
               <Text accessibilityRole="header" style={[styles.emptyTitle, { color: theme.text }]}>
                 No memories yet

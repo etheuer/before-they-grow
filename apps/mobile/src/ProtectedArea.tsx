@@ -131,15 +131,20 @@ function HomeShell({
   const theme = useTheme()
   const [screen, setScreen] = useState<'tonight' | 'memories'>('tonight')
   const [memories, setMemories] = useState<MemoryEntryV1[]>([])
+  const [loadFailed, setLoadFailed] = useState(false)
 
   const refreshTimeline = () => {
     void services
       .loadMemoryTimeline()
-      .then(setMemories)
+      .then((loaded) => {
+        setMemories(loaded)
+        setLoadFailed(false)
+      })
       .catch(() => {
-        // A read failure must surface as blocked storage, never as a false
-        // empty timeline.
-        onStorageBlocked()
+        // A read failure is surfaced honestly as an error state with retry,
+        // never as a false empty timeline and never as an unbounded reload
+        // loop back into bootstrap.
+        setLoadFailed(true)
       })
   }
 
@@ -155,6 +160,8 @@ function HomeShell({
         childNickname={profile.childNickname}
         onBack={() => setScreen('tonight')}
         onAnswerTonight={() => setScreen('tonight')}
+        onRetry={() => refreshTimeline()}
+        loadFailed={loadFailed}
         theme={theme}
       />
     )

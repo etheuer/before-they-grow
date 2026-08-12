@@ -57,6 +57,7 @@ function fakeProtectedArea(options: {
   permission?: 'granted' | 'denied' | 'unavailable'
   memories?: MemoryEntryV1[]
   bootstrapFailures?: number
+  timelineFailures?: number
 } = {}): ProtectedAreaServices & {
   creates: CreateProfileInput[]
   bootstrapCalls: number
@@ -67,6 +68,7 @@ function fakeProtectedArea(options: {
     bootstrapCalls: 0,
     savedManual: [] as Array<{ transcript: string; recordingWasAvailable: boolean }>,
     memories: [...(options.memories ?? [])],
+    timelineLoads: 0,
   }
   return {
     creates: state.creates,
@@ -123,6 +125,11 @@ function fakeProtectedArea(options: {
       return { kind: 'saved', memory }
     },
     async loadMemoryTimeline() {
+      if ((options.timelineFailures ?? 0) > state.timelineLoads) {
+        state.timelineLoads += 1
+        throw new Error('timeline read failed')
+      }
+      state.timelineLoads += 1
       return [...state.memories]
     },
   }
@@ -405,6 +412,24 @@ describe('protected area', () => {
 
     await fireEvent.press(screen.getByRole('button', { name: "Answer tonight's question" }))
     expect(await screen.findByText('What happened today that made you feel proud?')).toBeOnTheScreen()
+  })
+
+  it('shows a timeline read failure as an explicit error with retry, never an empty state', async () => {
+    const newer = memoryEntry('newer', '2026-08-11', 'I made my bed by myself.')
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      memories: [newer],
+      timelineFailures: 1,
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'View memories' }))
+    expect(await screen.findByText("Couldn't load your memories")).toBeOnTheScreen()
+    expect(screen.queryByText('No memories yet')).toBeNull()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('“I made my bed by myself.”')).toBeOnTheScreen()
   })
   it('shows an unexpected bootstrap failure as a blocked state and recovers on retry', async () => {
     const area = fakeProtectedArea({ initial: homeWithProfile, bootstrapFailures: 1 })
