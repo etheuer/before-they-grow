@@ -214,7 +214,6 @@ export function createProtectedAreaServices(
           await cleanStaleCaptureCache()
         }
         await resumeFilesystemMigration(mediaStore, storageLayoutVersion)
-        }
         indeterminateStorage = false
         const unavailable = profile.consumeUnavailable?.() ?? []
         const state = await loadProtectedHomeState({ repository: profile }, date)

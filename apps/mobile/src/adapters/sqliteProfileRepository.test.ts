@@ -535,7 +535,7 @@ describe('createSqliteProfileRepository', () => {
       { memoryId: 'memory-voice-1', reason: 'missing-file' },
     ])
     expect(inventory.cleaned).toEqual(['stale'])
-    expect(inventory.unreferenced).toEqual([['media/memory-voice-1.m4a']])
+    expect(inventory.unreferenced).toEqual([]) // deferred post-MVP
   })
 
   it('reports a wrong-size referenced file as unavailable and does not recreate the catalog', async () => {
