@@ -19,6 +19,13 @@ function fakeMemoryRepository(): MemoryRepositoryPort & { memories: MemoryEntryV
       repo.memories.push(memory)
       return 'created'
     },
+    async updateReviewedTranscript(id, reviewedTranscript) {
+      const memory = repo.memories.find((entry) => entry.id === id)
+      if (!memory) return 'missing'
+      if (memory.reviewedTranscript === reviewedTranscript) return 'unchanged'
+      memory.reviewedTranscript = reviewedTranscript
+      return 'updated'
+    },
     async findNewestFirst() {
       return [...repo.memories].sort((a, b) => b.savedAt.localeCompare(a.savedAt))
     },

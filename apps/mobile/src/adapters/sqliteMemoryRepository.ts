@@ -37,6 +37,7 @@ type JournalRow = {
   relative_path: string | null
   memory_json: string
   phase: 'prepared' | 'media-committed'
+  created_at: string
 }
 
 function mapRow(row: MemoryRow): MemoryEntryV1 {
@@ -99,14 +100,52 @@ function isOutOfSpace(error: unknown): boolean {
   return /(?:out of space|no space|disk full|database or disk is full|enospc)/i.test(message)
 }
 
-function sameRecord(left: SaveOperationRecord, right: SaveOperationRecord): boolean {
+function sameIdentity(left: SaveOperationRecord, right: SaveOperationRecord): boolean {
   return (
     left.identity.operationId === right.identity.operationId
     && left.identity.memoryId === right.identity.memoryId
     && left.identity.mediaSha256 === right.identity.mediaSha256
     && left.relativePath === right.relativePath
-    && JSON.stringify(left.memory) === JSON.stringify(right.memory)
   )
+}
+
+function sameRetryContent(left: SaveOperationRecord, right: SaveOperationRecord): boolean {
+  if (left.memory.kind !== right.memory.kind) return false
+  if (left.memory.kind === 'voice') {
+    return JSON.stringify({ ...left.memory, reviewedTranscript: '' })
+      === JSON.stringify({ ...right.memory, reviewedTranscript: '' })
+  }
+  return JSON.stringify(left.memory) === JSON.stringify(right.memory)
+}
+
+async function verifyMemoryVisible(
+  client: SqliteClientPort,
+  memoryId: string,
+): Promise<'visible' | 'absent' | 'unknown'> {
+  try {
+    const rows = await client.getAll<{ id: string }>(
+      `SELECT id FROM ${MEMORIES_TABLE} WHERE id = ?`,
+      [memoryId],
+    )
+    return rows.length === 1 ? 'visible' : 'absent'
+  } catch {
+    return 'unknown'
+  }
+}
+
+async function verifyJournalVisible(
+  client: SqliteClientPort,
+  operationId: string,
+): Promise<'visible' | 'absent' | 'unknown'> {
+  try {
+    const rows = await client.getAll<{ operation_id: string }>(
+      `SELECT operation_id FROM ${SAVE_OPERATIONS_TABLE} WHERE operation_id = ?`,
+      [operationId],
+    )
+    return rows.length === 1 ? 'visible' : 'absent'
+  } catch {
+    return 'unknown'
+  }
 }
 
 /**
@@ -120,7 +159,7 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
       try {
         return await client.transaction(async (txn) => {
           const rows = await txn.getAll<JournalRow>(
-            `SELECT operation_id, memory_id, media_sha256, relative_path, memory_json, phase
+            `SELECT operation_id, memory_id, media_sha256, relative_path, memory_json, phase, created_at
              FROM ${SAVE_OPERATIONS_TABLE}
              WHERE operation_id = ? OR memory_id = ?
              LIMIT 1`,
@@ -129,10 +168,17 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
           const existing = rows[0]
           if (existing) {
             const parsed = parseJournalRow(existing)
-            if (sameRecord(parsed, operation)) {
-              return { kind: 'existing', record: parsed }
+            if (!sameIdentity(parsed, operation) || !sameRetryContent(parsed, operation)) {
+              return { kind: 'conflict', existing: parsed.memory }
             }
-            return { kind: 'conflict', existing: parsed.memory }
+            if (parsed.memory.reviewedTranscript !== operation.memory.reviewedTranscript) {
+              await txn.run(
+                `UPDATE ${SAVE_OPERATIONS_TABLE} SET memory_json = ? WHERE operation_id = ?`,
+                [JSON.stringify(operation.memory), operation.identity.operationId],
+              )
+              return { kind: 'existing', record: operation }
+            }
+            return { kind: 'existing', record: parsed }
           }
           await txn.run(
             `INSERT INTO ${SAVE_OPERATIONS_TABLE} (
@@ -158,6 +204,10 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
           || error instanceof SaveIndeterminateError
         ) throw error
         if (isOutOfSpace(error)) throw new SaveCapacityError()
+        const visibility = await verifyJournalVisible(client, operation.identity.operationId)
+        if (visibility === 'visible' || visibility === 'unknown') {
+          throw new SaveIndeterminateError('journal-uncertain')
+        }
         throw new SaveBoundaryError('pre-commit', 'database-commit-failed')
       }
     },
@@ -184,25 +234,11 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
       }
     },
 
-    async markPrepared(operationId) {
-      try {
-        await client.transaction(async (txn) => {
-          await txn.run(
-            `UPDATE ${SAVE_OPERATIONS_TABLE} SET phase = ? WHERE operation_id = ?`,
-            ['prepared', operationId],
-          )
-        })
-      } catch (error) {
-        if (error instanceof StorageGateError) throw error
-        throw new SaveBoundaryError('pre-commit', 'database-commit-failed')
-      }
-    },
-
     async listPending() {
       if (!client.isOpen()) throw new StorageGateError('integrity-failed')
       try {
         const rows = await client.getAll<JournalRow>(
-          `SELECT operation_id, memory_id, media_sha256, relative_path, memory_json, phase
+          `SELECT operation_id, memory_id, media_sha256, relative_path, memory_json, phase, created_at
            FROM ${SAVE_OPERATIONS_TABLE}
            ORDER BY created_at ASC`,
         )
@@ -232,6 +268,30 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
 
   return {
     saveJournal: journal,
+
+    async updateReviewedTranscript(id, reviewedTranscript) {
+      if (!client.isOpen()) throw new StorageGateError('integrity-failed')
+      const existing = await client.getAll<{ id: string }>(
+        `SELECT id FROM ${MEMORIES_TABLE} WHERE id = ?`,
+        [id],
+      )
+      if (existing.length === 0) return 'missing' as const
+      try {
+        await client.transaction(async (txn) => {
+          await txn.run(
+            `UPDATE ${MEMORIES_TABLE} SET reviewed_transcript = ? WHERE id = ?`,
+            [reviewedTranscript, id],
+          )
+        })
+        return 'updated' as const
+      } catch (error) {
+        if (error instanceof StorageGateError) throw error
+        if (error instanceof SaveCapacityError) throw error
+        if (error instanceof SaveBoundaryError || error instanceof SaveIndeterminateError) throw error
+        if (isOutOfSpace(error)) throw new SaveCapacityError()
+        throw new SaveIndeterminateError('database-commit-uncertain')
+      }
+    },
 
     async create(memory) {
       if (!client.isOpen()) throw new StorageGateError('integrity-failed')
@@ -273,6 +333,10 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
       } catch (error) {
         if (error instanceof StorageGateError) throw error
         if (error instanceof SaveCapacityError || error instanceof SaveBoundaryError || error instanceof SaveIndeterminateError) throw error
+        const visibility = await verifyMemoryVisible(client, memory.id)
+        if (visibility === 'visible' || visibility === 'unknown') {
+          throw new SaveIndeterminateError('database-commit-uncertain')
+        }
         if (isOutOfSpace(error)) throw new SaveCapacityError()
         throw new SaveBoundaryError('pre-commit', 'database-commit-failed')
       }

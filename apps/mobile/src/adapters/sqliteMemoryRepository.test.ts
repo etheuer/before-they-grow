@@ -16,6 +16,7 @@ type SaveOperationRow = {
   relative_path: string | null
   memory_json: string
   phase: 'prepared' | 'media-committed'
+  created_at: string
 }
 
 type MemoryRow = {
@@ -43,6 +44,7 @@ function fakeClient() {
     memories: [] as MemoryRow[],
     operations: [] as SaveOperationRow[],
     transactionFailure: null as Error | null,
+    postCommitFailure: null as Error | null,
     hideVerification: false,
   }
   const client: SqliteClientPort = {
@@ -75,11 +77,17 @@ function fakeClient() {
     },
     async getAll<T>(sql: string, params: readonly unknown[] = []) {
       if (sql.includes(`FROM ${SAVE_OPERATIONS_TABLE}`)) {
-        return state.operations.filter((operation) =>
+        const operations = state.operations.filter((operation) =>
           sql.includes('ORDER BY')
             || operation.operation_id === params[0]
+            || operation.operation_id === params[1]
+            || operation.memory_id === params[0]
             || operation.memory_id === params[1],
-        ).map((operation) => ({ ...operation })) as unknown as T[]
+        )
+        if (sql.includes('ORDER BY created_at ASC')) {
+          operations.sort((left, right) => left.created_at.localeCompare(right.created_at))
+        }
+        return operations.map((operation) => ({ ...operation })) as unknown as T[]
       }
       if (sql.includes('FROM memories') && sql.includes('ORDER BY saved_at DESC')) {
         return [...state.memories]
@@ -96,6 +104,10 @@ function fakeClient() {
       throw new Error(`Unexpected query: ${sql}`)
     },
     async transaction<T>(block: (txn: SqliteTransactionPort) => Promise<T>) {
+      const memoriesBefore = state.memories.map((memory) => ({ ...memory }))
+      const operationsBefore = state.operations.map((operation) => ({ ...operation }))
+      const tablesBefore = new Set(state.tables)
+      let blockCompleted = false
       const txn: SqliteTransactionPort = {
         async exec() {
           for (const statement of DATABASE_DDL_V2.split(';')) {
@@ -109,7 +121,7 @@ function fakeClient() {
             throw new Error('DDL must go through exec, not run')
           }
           if (sql.includes(`INSERT INTO ${SAVE_OPERATIONS_TABLE}`)) {
-            const [operation_id, memory_id, media_sha256, relative_path, memory_json, phase] = params
+            const [operation_id, memory_id, media_sha256, relative_path, memory_json, phase, created_at] = params
             state.operations.push({
               operation_id: String(operation_id),
               memory_id: String(memory_id),
@@ -117,18 +129,31 @@ function fakeClient() {
               relative_path: relative_path as string | null,
               memory_json: String(memory_json),
               phase: phase as 'prepared' | 'media-committed',
+              created_at: String(created_at),
             })
             return
           }
           if (sql.includes(`UPDATE ${SAVE_OPERATIONS_TABLE}`)) {
-            const [phase, operationId] = params
-            const operation = state.operations.find((entry) => entry.operation_id === operationId)
-            if (operation) operation.phase = phase as 'prepared' | 'media-committed'
+            if (sql.includes('memory_json')) {
+              const [memoryJson, operationId] = params
+              const operation = state.operations.find((entry) => entry.operation_id === operationId)
+              if (operation) operation.memory_json = String(memoryJson)
+            } else {
+              const [phase, operationId] = params
+              const operation = state.operations.find((entry) => entry.operation_id === operationId)
+              if (operation) operation.phase = phase as 'prepared' | 'media-committed'
+            }
             return
           }
           if (sql.includes(`DELETE FROM ${SAVE_OPERATIONS_TABLE}`)) {
             const operationId = params[0]
             state.operations = state.operations.filter((entry) => entry.operation_id !== operationId)
+            return
+          }
+          if (sql.includes('UPDATE memories')) {
+            const [reviewedTranscript, memoryId] = params
+            const memory = state.memories.find((entry) => entry.id === memoryId)
+            if (memory) memory.reviewed_transcript = String(reviewedTranscript)
             return
           }
           if (sql.includes('INSERT INTO memories')) {
@@ -164,7 +189,10 @@ function fakeClient() {
         async getAll<T2>(sql: string, params: readonly unknown[] = []) {
           if (sql.includes(`FROM ${SAVE_OPERATIONS_TABLE}`)) {
             return state.operations.filter((operation) =>
-              operation.operation_id === params[0] || operation.memory_id === params[1],
+              operation.operation_id === params[0]
+                || operation.operation_id === params[1]
+                || operation.memory_id === params[0]
+                || operation.memory_id === params[1],
             ).map((operation) => ({ ...operation })) as T2[]
           }
           if (sql.includes('WHERE id = ?')) {
@@ -173,7 +201,23 @@ function fakeClient() {
           throw new Error(`Unexpected txn query: ${sql}`)
         },
       }
-      return block(txn)
+      try {
+        const result = await block(txn)
+        blockCompleted = true
+        if (state.postCommitFailure) {
+          const failure = state.postCommitFailure
+          state.postCommitFailure = null
+          throw failure
+        }
+        return result
+      } catch (error) {
+        if (!blockCompleted) {
+          state.memories = memoriesBefore
+          state.operations = operationsBefore
+          state.tables = tablesBefore
+        }
+        throw error
+      }
     },
     existingDatabasePaths() {
       return ['/documents/BeforeTheyGrow/layout-v1/profile-v1.db']
@@ -242,10 +286,20 @@ describe('createSqliteMemoryRepository', () => {
     expect(state.memories).toHaveLength(0)
   })
 
+  it('rolls back a failed transaction instead of leaving a phantom row', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    state.transactionFailure = new Error('database write failed')
+    const repo = createSqliteMemoryRepository(client)
+
+    await expect(repo.create(memory)).rejects.toThrow()
+    expect(state.memories).toHaveLength(0)
+  })
+
   it('keeps a post-commit database uncertainty distinguishable from a pre-commit failure', async () => {
     const { client, state } = fakeClient()
     await client.open()
-    state.transactionFailure = new SaveIndeterminateError('database-commit-uncertain')
+    state.postCommitFailure = new Error('connection lost after commit')
     const repo = createSqliteMemoryRepository(client)
 
     await expect(repo.create(memory)).rejects.toEqual(
@@ -264,6 +318,40 @@ describe('createSqliteMemoryRepository', () => {
       new SaveIndeterminateError('post-commit-verification-failed'),
     )
     expect(state.memories).toHaveLength(1)
+  })
+
+  it('rejects same-memory journal reuse with different operation identity', async () => {
+    const { client } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    const operation: SaveOperationRecord = {
+      identity: { operationId: 'operation-1', memoryId: voiceMemory.id, mediaSha256: voiceMemory.media?.sha256 ?? null },
+      relativePath: voiceMemory.media?.relativePath ?? null,
+      memory: voiceMemory,
+      phase: 'prepared',
+    }
+    await repo.saveJournal?.prepare(operation)
+    const conflict = await repo.saveJournal?.prepare({
+      ...operation,
+      identity: { ...operation.identity, operationId: 'different-operation' },
+    })
+    expect(conflict).toEqual({ kind: 'conflict', existing: voiceMemory })
+  })
+
+  it('updates only reviewed text when a same-identity voice retry changes the draft', async () => {
+    const { client } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    const operation: SaveOperationRecord = {
+      identity: { operationId: 'operation-1', memoryId: voiceMemory.id, mediaSha256: voiceMemory.media?.sha256 ?? null },
+      relativePath: voiceMemory.media?.relativePath ?? null,
+      memory: voiceMemory,
+      phase: 'prepared',
+    }
+    await repo.saveJournal?.prepare(operation)
+    const updated = { ...voiceMemory, reviewedTranscript: 'Parent words' }
+    const result = await repo.saveJournal?.prepare({ ...operation, memory: updated })
+    expect(result).toEqual({ kind: 'existing', record: { ...operation, memory: updated } })
   })
 
   it('persists, advances, lists, and removes a save operation journal entry', async () => {

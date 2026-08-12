@@ -82,8 +82,8 @@ export type MediaStorePort = {
   /** Advisory capacity gate; it must never delete existing family content. */
   preflight?(requiredBytes: number): Promise<void>
   commit(sourceUri: string, relativePath: string): Promise<void>
-  /** Rechecks a recognized final resource during bootstrap reconciliation. */
-  reconcileFinal?(relativePath: string): Promise<boolean>
+  /** Rechecks a recognized final resource during retries and bootstrap reconciliation. */
+  reconcileFinal(relativePath: string): Promise<boolean>
   /** Removes a committed file, used to compensate a failed database write. */
   removeFinal(relativePath: string): Promise<void>
   /** Best-effort removal of a cache recording after cancellation or relaunch. */
@@ -149,9 +149,6 @@ export type SaveVoiceMemoryInput = {
   validatedMedia: ValidatedAudio
   /** Stable identity returned by a prior Not saved attempt. */
   operation?: SaveOperationIdentity
-  /** Flat aliases kept for callers that persist the two identifiers separately. */
-  operationId?: string
-  memoryId?: string
 }
 
 export type SaveVoiceMemoryResult = ReliableSaveResult
@@ -168,9 +165,9 @@ export async function saveVoiceMemory(
   input: SaveVoiceMemoryInput,
 ): Promise<SaveVoiceMemoryResult> {
   const media = input.validatedMedia
-  const fallbackId = input.operation?.memoryId ?? input.memoryId ?? deps.generateId()
+  const fallbackId = input.operation?.memoryId ?? deps.generateId()
   const operation: SaveOperationIdentity = input.operation ?? {
-    operationId: input.operationId ?? fallbackId,
+    operationId: fallbackId,
     memoryId: fallbackId,
     mediaSha256: media.sha256,
   }
@@ -183,10 +180,10 @@ export async function saveVoiceMemory(
     return { kind: 'not-saved', reason: 'invalid-audio', retry }
   }
   if (operation.mediaSha256 !== media.sha256) {
-    return { kind: 'not-saved', reason: 'operation-conflict', retry }
+    return { kind: 'not-saved', reason: 'conflict', retry }
   }
   if (!/^[A-Za-z0-9_-]+$/.test(operation.memoryId)) {
-    return { kind: 'not-saved', reason: 'operation-conflict', retry }
+    return { kind: 'not-saved', reason: 'conflict', retry }
   }
 
   // The filename is an opaque id only; family content never enters filenames.

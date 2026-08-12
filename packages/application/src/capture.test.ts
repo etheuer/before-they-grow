@@ -37,18 +37,25 @@ function fakeInspector(overrides: Partial<{
 function fakeMediaStore(): MediaStorePort & {
   committed: string[]
   removed: string[]
+  finals: Set<string>
   failCommit: Error | null
 } {
-  const store: MediaStorePort & { committed: string[]; removed: string[]; failCommit: Error | null } = {
+  const store: MediaStorePort & { committed: string[]; removed: string[]; finals: Set<string>; failCommit: Error | null } = {
     committed: [],
     removed: [],
+    finals: new Set(),
     failCommit: null,
     async commit(sourceUri, relativePath) {
       if (store.failCommit) throw store.failCommit
       store.committed.push(`${sourceUri} -> ${relativePath}`)
+      store.finals.add(relativePath)
     },
     async removeFinal(relativePath) {
       store.removed.push(relativePath)
+      store.finals.delete(relativePath)
+    },
+    async reconcileFinal(relativePath) {
+      return store.finals.has(relativePath)
     },
     async resolve(relativePath) {
       return `file:///documents/${relativePath}`
@@ -66,6 +73,13 @@ function fakeMemoryRepository(): MemoryRepositoryPort & { memories: MemoryEntryV
       if (repo.memories.some((m) => m.id === memory.id)) return 'duplicate'
       repo.memories.push(memory)
       return 'created'
+    },
+    async updateReviewedTranscript(id, reviewedTranscript) {
+      const memory = repo.memories.find((entry) => entry.id === id)
+      if (!memory) return 'missing'
+      if (memory.reviewedTranscript === reviewedTranscript) return 'unchanged'
+      memory.reviewedTranscript = reviewedTranscript
+      return 'updated'
     },
     async findNewestFirst() {
       return [...repo.memories].sort((a, b) => b.savedAt.localeCompare(a.savedAt))

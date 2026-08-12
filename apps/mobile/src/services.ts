@@ -259,7 +259,7 @@ export function createProtectedAreaServices(
     async saveManualMemory(input) {
       assertStorageAvailable()
       const { memory } = await getRepositorySet()
-      return saveManualMemory(
+      const result = await saveManualMemory(
         {
           repository: memory,
           generateId: () => Crypto.randomUUID(),
@@ -267,6 +267,8 @@ export function createProtectedAreaServices(
         },
         input,
       )
+      if (result.kind === 'indeterminate') indeterminateStorage = true
+      return result
     },
 
     async loadMemoryTimeline() {

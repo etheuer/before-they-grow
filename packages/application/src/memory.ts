@@ -24,7 +24,9 @@ export type MemoryRepositoryPort = {
    * Persists a memory atomically and returns success only after the row is
    * queryable. Enforces primary-key idempotency.
    */
-  create(memory: MemoryEntryV1): Promise<'created' | 'duplicate' | 'conflict'>
+  create(memory: MemoryEntryV1): Promise<'created' | 'duplicate'>
+  /** Updates only parent-reviewed text for a stable voice memory identity. */
+  updateReviewedTranscript(id: string, reviewedTranscript: string): Promise<'updated' | 'unchanged' | 'missing'>
   /** Looks up one memory for idempotent retry and conflict detection. */
   findById?(id: string): Promise<MemoryEntryV1 | null>
   /** Durable save journal owned by the same catalog, when available. */
@@ -46,9 +48,6 @@ export type SaveManualMemoryInput = {
   recordingWasAvailable: boolean
   /** Stable identity returned by a prior Not saved attempt. */
   operation?: SaveOperationIdentity
-  /** Flat aliases kept for callers that persist the two identifiers separately. */
-  operationId?: string
-  memoryId?: string
 }
 
 export type SaveManualMemoryResult =
@@ -89,9 +88,9 @@ export async function saveManualMemory(
   if (reviewedTranscript.length === 0) return { kind: 'invalid-transcript' }
   if (input.recordingWasAvailable) return { kind: 'recording-was-available' }
 
-  const fallbackId = input.operation?.memoryId ?? input.memoryId ?? deps.generateId()
+  const fallbackId = input.operation?.memoryId ?? deps.generateId()
   const operation: SaveOperationIdentity = input.operation ?? {
-    operationId: input.operationId ?? fallbackId,
+    operationId: fallbackId,
     memoryId: fallbackId,
     mediaSha256: null,
   }

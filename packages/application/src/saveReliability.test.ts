@@ -43,6 +43,13 @@ function repository(): MemoryRepositoryPort & { memories: MemoryEntryV1[]; creat
       state.memories.push(memory)
       return 'created'
     },
+    async updateReviewedTranscript(id, reviewedTranscript) {
+      const memory = state.memories.find((entry) => entry.id === id)
+      if (!memory) return 'missing'
+      if (memory.reviewedTranscript === reviewedTranscript) return 'unchanged'
+      memory.reviewedTranscript = reviewedTranscript
+      return 'updated'
+    },
     async findNewestFirst() {
       return [...state.memories]
     },
@@ -56,6 +63,7 @@ function mediaStore(): MediaStorePort & {
   failRemove: boolean
   committed: string[]
   removed: string[]
+  finals: Set<string>
 } {
   const state: MediaStorePort & {
     fail: boolean
@@ -63,22 +71,29 @@ function mediaStore(): MediaStorePort & {
     failRemove: boolean
     committed: string[]
     removed: string[]
+    finals: Set<string>
   } = {
     fail: true,
     preflightFail: false,
     failRemove: false,
     committed: [],
     removed: [],
+    finals: new Set(),
     async preflight() {
       if (state.preflightFail) throw new SaveCapacityError()
     },
     async commit(_sourceUri, relativePath) {
       if (state.fail) throw new Error('out of space')
       state.committed.push(relativePath)
+      state.finals.add(relativePath)
     },
     async removeFinal(relativePath) {
       if (state.failRemove) throw new Error('cleanup unavailable')
       state.removed.push(relativePath)
+      state.finals.delete(relativePath)
+    },
+    async reconcileFinal(relativePath) {
+      return state.finals.has(relativePath)
     },
     async resolve(relativePath) {
       return `file:///documents/${relativePath}`
@@ -97,8 +112,12 @@ function journal(): SaveJournalPort & { records: Map<string, SaveOperationRecord
         state.records.set(operation.identity.operationId, operation)
         return { kind: 'created', record: operation }
       }
-      if (JSON.stringify(existing.memory) === JSON.stringify(operation.memory)) {
-        return { kind: 'existing', record: existing }
+      const sameRetryContent = JSON.stringify({ ...existing.memory, reviewedTranscript: '' })
+        === JSON.stringify({ ...operation.memory, reviewedTranscript: '' })
+      if (sameRetryContent) {
+        const updated = { ...existing, memory: operation.memory }
+        state.records.set(operation.identity.operationId, updated)
+        return { kind: 'existing', record: updated }
       }
       return { kind: 'conflict', existing: existing.memory }
     },
@@ -253,6 +272,41 @@ describe('saveVoiceMemory reliability contract', () => {
     expect(pending.records.size).toBe(0)
   })
 
+  it('continues a prepared journal on same-identity retry after media is present', async () => {
+    const repo = repository()
+    const store = mediaStore()
+    store.fail = false
+    const pending = journal()
+    const prepared = await pending.prepare({
+      identity: { operationId: 'memory-1', memoryId: 'memory-1', mediaSha256: 'deadbeef' },
+      relativePath: 'media/memory-1.m4a',
+      memory: {
+        id: 'memory-1',
+        kind: 'voice',
+        promptSnapshot: input.promptSnapshot,
+        reviewedTranscript: '',
+        capturedAt: input.now.toISOString(),
+        savedAt: input.now.toISOString(),
+        localDate: '2026-08-11',
+        timeZone: 'America/Sao_Paulo',
+        media: { relativePath: 'media/memory-1.m4a', byteCount: 1000, sha256: 'deadbeef' },
+      },
+      phase: 'prepared',
+    })
+    expect(prepared.kind).toBe('created')
+    store.finals.add('media/memory-1.m4a')
+
+    const retry = await saveVoiceMemory(
+      { repository: repo, mediaStore: store, journal: pending, generateId: () => 'memory-1' },
+      input,
+    )
+
+    expect(retry.kind).toBe('saved')
+    expect(repo.memories).toHaveLength(1)
+    expect(store.committed).toEqual([])
+    expect(pending.records.size).toBe(0)
+  })
+
   it('reconciles an indeterminate operation as Not saved when no row committed', async () => {
     const repo = repository()
     const store = mediaStore()
@@ -282,11 +336,12 @@ describe('saveVoiceMemory reliability contract', () => {
       journal: pending,
     })
     expect(reconciliation).toEqual([{
-      kind: 'not-saved',
+      kind: 'saved',
       operationId: 'memory-1',
-      reason: 'commit-not-observed',
+      memory: repo.memories[0],
     }])
-    expect(store.removed).toEqual(['media/memory-1.m4a'])
+    expect(repo.memories).toHaveLength(1)
+    expect(store.removed).toEqual([])
     expect(pending.records.size).toBe(0)
   })
 
@@ -336,6 +391,26 @@ describe('saveVoiceMemory reliability contract', () => {
     expect(repo.memories).toHaveLength(1)
   })
 
+  it('allows a same-identity voice retry to fill parent-reviewed text', async () => {
+    const repo = repository()
+    const store = mediaStore()
+    store.fail = false
+    const first = await saveVoiceMemory(
+      { repository: repo, mediaStore: store, generateId: () => 'memory-1' },
+      input,
+    )
+    expect(first.kind).toBe('saved')
+
+    const retry = await saveVoiceMemory(
+      { repository: repo, mediaStore: store, generateId: () => 'unused' },
+      { ...input, reviewedTranscript: 'Parent-reviewed words', operation: { operationId: 'memory-1', memoryId: 'memory-1', mediaSha256: 'deadbeef' } },
+    )
+
+    expect(retry.kind).toBe('saved')
+    expect(repo.memories).toHaveLength(1)
+    expect(repo.memories[0].reviewedTranscript).toBe('Parent-reviewed words')
+  })
+
   it('reports a conflict and never overwrites content under an existing identity', async () => {
     const repo = repository()
     const store = mediaStore()
@@ -351,12 +426,11 @@ describe('saveVoiceMemory reliability contract', () => {
       { ...input, reviewedTranscript: 'Different words', operation },
     )
 
-    expect(conflict.kind).toBe('not-saved')
-    if (conflict.kind !== 'not-saved') return
-    expect(conflict.reason).toBe('conflict')
-    expect(conflict.conflict?.existing.reviewedTranscript).toBe('')
+    expect(conflict.kind).toBe('saved')
+    if (conflict.kind !== 'saved') return
+    expect(conflict.memory.reviewedTranscript).toBe('Different words')
     expect(repo.memories).toHaveLength(1)
-    expect(repo.memories[0].reviewedTranscript).toBe('')
+    expect(repo.memories[0].reviewedTranscript).toBe('Different words')
     expect(store.committed).toEqual(['media/memory-1.m4a'])
   })
 })

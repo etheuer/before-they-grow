@@ -21,7 +21,7 @@ export type SaveOperationRecord = {
 export type SaveJournalPrepareResult =
   | { kind: 'created'; record: SaveOperationRecord }
   | { kind: 'existing'; record: SaveOperationRecord }
-  | { kind: 'conflict'; existing?: MemoryEntryV1 }
+  | { kind: 'conflict'; existing: MemoryEntryV1 }
 
 /**
  * A journal is deliberately narrower than SQLite. The native adapter persists
@@ -31,8 +31,6 @@ export type SaveJournalPrepareResult =
 export type SaveJournalPort = {
   prepare(operation: SaveOperationRecord): Promise<SaveJournalPrepareResult>
   markMediaCommitted(operationId: string): Promise<void>
-  /** Resets a stale media phase after a known pre-commit compensation. */
-  markPrepared?(operationId: string): Promise<void>
   listPending(): Promise<SaveOperationRecord[]>
   remove(operationId: string): Promise<void>
 }
@@ -43,9 +41,7 @@ export type SaveNotSavedReason =
   | 'preflight-failed'
   | 'media-commit-failed'
   | 'database-commit-failed'
-  | 'operation-conflict'
   | 'conflict'
-  | 'cleanup-pending'
 
 export type SaveIndeterminateReason =
   | 'media-commit-uncertain'
@@ -66,14 +62,6 @@ export class SaveIndeterminateError extends Error {
   constructor(readonly reason: SaveIndeterminateReason, message = reason) {
     super(message)
     this.name = 'SaveIndeterminateError'
-  }
-}
-
-/** A stable identifier was reused for different content. */
-export class SaveConflictError extends Error {
-  constructor(message = 'The save operation identifiers belong to different content') {
-    super(message)
-    this.name = 'SaveConflictError'
   }
 }
 
@@ -99,19 +87,21 @@ export type ReliableSaveResult =
       retry: SaveRetry
       cleanupPending?: boolean
       conflict?: { existing: MemoryEntryV1 }
-      existing?: MemoryEntryV1
     }
   | { kind: 'indeterminate'; reason: SaveIndeterminateReason; operation: SaveOperationIdentity }
-
-/** Public three-way save contract used by voice and manual paths. */
-export type SaveOutcome = ReliableSaveResult
 
 export type SaveReconciliationResult =
   | { kind: 'saved'; operationId: string; memory: MemoryEntryV1 }
   | { kind: 'not-saved'; operationId: string; reason: 'commit-not-observed' }
+  | {
+      kind: 'conflict'
+      operationId: string
+      existing: MemoryEntryV1
+      cleanupPending?: boolean
+    }
 
 export class SaveReconciliationError extends Error {
-  constructor(readonly reason: 'conflict' | 'cleanup-failed' | 'journal-failed', message = reason) {
+  constructor(readonly reason: 'cleanup-failed' | 'journal-failed', message = reason) {
     super(message)
     this.name = 'SaveReconciliationError'
   }
@@ -120,7 +110,8 @@ export class SaveReconciliationError extends Error {
 type SaveMediaPort = {
   commit(sourceUri: string, relativePath: string): Promise<void>
   removeFinal(relativePath: string): Promise<void>
-  reconcileFinal?(relativePath: string): Promise<boolean>
+  /** Verifies a recognized final, including its backup-exclusion policy. */
+  reconcileFinal(relativePath: string): Promise<boolean>
 }
 
 type ReliableSaveDependencies = {
@@ -137,7 +128,18 @@ type ReliableSaveInput = {
   sourceUri: string | null
 }
 
-function sameMemory(left: MemoryEntryV1, right: MemoryEntryV1): boolean {
+/**
+ * Voice media is immutable for an operation, while parent-reviewed text is
+ * intentionally editable between capture, transcription, and retry. Text-only
+ * memories have no separate immutable payload, so their complete content is
+ * the retry identity's content.
+ */
+function sameRetryContent(left: MemoryEntryV1, right: MemoryEntryV1): boolean {
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'voice') {
+    return JSON.stringify({ ...left, reviewedTranscript: '' })
+      === JSON.stringify({ ...right, reviewedTranscript: '' })
+  }
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
@@ -166,6 +168,11 @@ function isStorageGate(error: unknown): boolean {
   )
 }
 
+function storageGateReason(error: unknown): string | null {
+  if (!isStorageGate(error)) return null
+  return (error as { reason: string }).reason
+}
+
 function isIndeterminateFailure(error: unknown): SaveIndeterminateReason | null {
   if (error instanceof SaveIndeterminateError) return error.reason
   if (error instanceof SaveBoundaryError && error.phase !== 'pre-commit') {
@@ -180,10 +187,7 @@ function isIndeterminateFailure(error: unknown): SaveIndeterminateReason | null 
       ? error.reason as SaveIndeterminateReason
       : 'database-commit-uncertain'
   }
-  if (error instanceof SaveConflictError) return 'media-commit-uncertain'
-  if (isStorageGate(error) && (error as { reason: string }).reason === 'backup-control-failed') {
-    return 'backup-control-failed'
-  }
+  if (storageGateReason(error) === 'backup-control-failed') return 'backup-control-failed'
   return null
 }
 
@@ -196,7 +200,6 @@ function conflictResult(
     reason: 'conflict',
     retry: identity,
     conflict: { existing },
-    existing,
   }
 }
 
@@ -263,20 +266,87 @@ async function compensateKnownFailure(
   // Keep the durable intent when the recognized final cannot be removed; the
   // next bootstrap must get another chance to remove that orphan safely.
   if (!mediaClean) return false
-  const journalClean = await forgetJournal(deps.journal, input.identity.operationId)
-  if (journalClean) return true
-  try {
-    await deps.journal?.markPrepared?.(input.identity.operationId)
-  } catch {
-    // The pending journal remains the bootstrap reconciliation authority.
+  return forgetJournal(deps.journal, input.identity.operationId)
+}
+
+async function updateExistingVoiceReview(
+  deps: ReliableSaveDependencies,
+  identity: SaveOperationIdentity,
+  existing: MemoryEntryV1,
+  requested: MemoryEntryV1,
+): Promise<ReliableSaveResult> {
+  if (
+    existing.kind !== 'voice'
+    || requested.kind !== 'voice'
+    || !sameRetryContent(existing, requested)
+  ) {
+    return conflictResult(identity, existing)
   }
-  return false
+  if (existing.reviewedTranscript === requested.reviewedTranscript) {
+    return { kind: 'saved', memory: existing }
+  }
+
+  try {
+    const outcome = await deps.repository.updateReviewedTranscript(
+      identity.memoryId,
+      requested.reviewedTranscript,
+    )
+    if (outcome === 'missing') {
+      return { kind: 'indeterminate', reason: 'database-commit-uncertain', operation: identity }
+    }
+    const updated = await findById(deps.repository, identity.memoryId)
+    if (
+      !updated
+      || !sameRetryContent(updated, requested)
+      || updated.reviewedTranscript !== requested.reviewedTranscript
+    ) {
+      return { kind: 'indeterminate', reason: 'post-commit-verification-failed', operation: identity }
+    }
+    return { kind: 'saved', memory: updated }
+  } catch (error) {
+    if (isStorageGate(error)) throw error
+    const uncertain = isIndeterminateFailure(error)
+    if (uncertain) return { kind: 'indeterminate', reason: uncertain, operation: identity }
+    return retryResult(identity, isCapacityFailure(error) ? 'low-storage' : 'database-commit-failed')
+  }
+}
+
+async function resolveExisting(
+  deps: ReliableSaveDependencies,
+  identity: SaveOperationIdentity,
+  existing: MemoryEntryV1,
+  requested: MemoryEntryV1,
+): Promise<ReliableSaveResult> {
+  if (!sameRetryContent(existing, requested)) return conflictResult(identity, existing)
+  if (
+    existing.kind === 'voice'
+    && existing.reviewedTranscript !== requested.reviewedTranscript
+  ) {
+    return updateExistingVoiceReview(deps, identity, existing, requested)
+  }
+  return { kind: 'saved', memory: existing }
+}
+
+async function finishSaved(
+  journal: SaveJournalPort | undefined,
+  identity: SaveOperationIdentity,
+  memory: MemoryEntryV1,
+): Promise<ReliableSaveResult> {
+  if (!(await forgetJournal(journal, identity.operationId))) {
+    return {
+      kind: 'indeterminate',
+      reason: 'journal-uncertain',
+      operation: identity,
+    }
+  }
+  return { kind: 'saved', memory }
 }
 
 /**
  * Runs the save sequence shared by voice and text-only memories. The sequence
- * is intentionally conservative: once media may have moved or SQLite may have
- * committed, it returns Indeterminate and leaves the journal for bootstrap.
+ * is intentionally conservative: once media may have moved or SQLite may
+ * have committed, it returns Indeterminate and leaves the journal for
+ * bootstrap.
  */
 export async function reliablySaveMemory(
   deps: ReliableSaveDependencies,
@@ -284,8 +354,11 @@ export async function reliablySaveMemory(
 ): Promise<ReliableSaveResult> {
   const existing = await findById(deps.repository, input.identity.memoryId)
   if (existing) {
-    if (sameMemory(existing, input.memory)) return { kind: 'saved', memory: existing }
-    return conflictResult(input.identity, existing)
+    const resolved = await resolveExisting(deps, input.identity, existing, input.memory)
+    if (resolved.kind === 'saved') {
+      return finishSaved(deps.journal, input.identity, resolved.memory)
+    }
+    return resolved
   }
 
   if (deps.preflight) {
@@ -293,13 +366,8 @@ export async function reliablySaveMemory(
       await deps.preflight()
     } catch (error) {
       if (isStorageGate(error)) throw error
-      if (isIndeterminateFailure(error)) {
-        return {
-          kind: 'indeterminate',
-          reason: isIndeterminateFailure(error) ?? 'journal-uncertain',
-          operation: input.identity,
-        }
-      }
+      const uncertain = isIndeterminateFailure(error)
+      if (uncertain) return { kind: 'indeterminate', reason: uncertain, operation: input.identity }
       return retryResult(input.identity, isCapacityFailure(error) ? 'low-storage' : 'preflight-failed')
     }
   }
@@ -317,24 +385,33 @@ export async function reliablySaveMemory(
       prepared = await deps.journal.prepare(requested)
     } catch (error) {
       if (isStorageGate(error)) throw error
+      const uncertain = isIndeterminateFailure(error)
+      if (uncertain) return { kind: 'indeterminate', reason: uncertain, operation: input.identity }
       return retryResult(input.identity, isCapacityFailure(error) ? 'low-storage' : 'database-commit-failed')
     }
     if (prepared.kind === 'conflict') {
-      const conflict = prepared.existing ?? (await findById(deps.repository, input.identity.memoryId))
-      if (conflict) return conflictResult(input.identity, conflict)
-      return retryResult(input.identity, 'operation-conflict')
+      return conflictResult(input.identity, prepared.existing)
     }
-    journalRecord = prepared.record
-    if (!sameMemory(journalRecord.memory, input.memory)) {
-      return conflictResult(input.identity, journalRecord.memory)
+    if (!sameRetryContent(prepared.record.memory, input.memory)) {
+      return conflictResult(input.identity, prepared.record.memory)
     }
+    // The journal adapter updates only the parent-reviewed field for a same
+    // identity voice retry; carry that current value into the rest of this
+    // attempt even for a deterministic application fake.
+    journalRecord = { ...prepared.record, memory: input.memory }
   }
 
-  let mediaCommitNeeded = journalRecord?.phase !== 'media-committed'
-  if (journalRecord?.phase === 'media-committed' && input.relativePath && deps.mediaStore?.reconcileFinal) {
+  let mediaCommitted = journalRecord?.phase === 'media-committed'
+  if (journalRecord && input.relativePath) {
     try {
-      mediaCommitNeeded = !(await deps.mediaStore.reconcileFinal(input.relativePath))
+      // A prepared operation with an existing, verified final is the known
+      // continuation after media movement and before the phase update.
+      mediaCommitted = journalRecord.phase === 'media-committed'
+        || await deps.mediaStore!.reconcileFinal(input.relativePath)
     } catch (error) {
+      if (storageGateReason(error) === 'backup-control-failed') {
+        return { kind: 'indeterminate', reason: 'backup-control-failed', operation: input.identity }
+      }
       if (isStorageGate(error)) throw error
       return {
         kind: 'indeterminate',
@@ -344,103 +421,142 @@ export async function reliablySaveMemory(
     }
   }
 
-  if (
-    input.relativePath
-    && input.sourceUri
-    && deps.mediaStore
-    && mediaCommitNeeded
-  ) {
+  if (input.relativePath && input.sourceUri && deps.mediaStore && !mediaCommitted) {
     try {
       await deps.mediaStore.commit(input.sourceUri, input.relativePath)
+      mediaCommitted = true
     } catch (error) {
       const uncertain = isIndeterminateFailure(error)
-      if (uncertain) {
-        return { kind: 'indeterminate', reason: uncertain, operation: input.identity }
-      }
+      if (uncertain) return { kind: 'indeterminate', reason: uncertain, operation: input.identity }
       const cleaned = await compensateKnownFailure(deps, input)
-      return retryResult(input.identity, isCapacityFailure(error) ? 'low-storage' : 'media-commit-failed', !cleaned)
-    }
-
-    if (deps.journal) {
-      try {
-        await deps.journal.markMediaCommitted(input.identity.operationId)
-      } catch {
-        return {
-          kind: 'indeterminate',
-          reason: 'journal-uncertain',
-          operation: input.identity,
-        }
-      }
+      return retryResult(
+        input.identity,
+        isCapacityFailure(error) ? 'low-storage' : 'media-commit-failed',
+        !cleaned,
+      )
     }
   }
 
-  let outcome: 'created' | 'duplicate' | 'conflict'
+  if (
+    deps.journal
+    && journalRecord
+    && input.relativePath
+    && journalRecord.phase !== 'media-committed'
+    && mediaCommitted
+  ) {
+    try {
+      await deps.journal.markMediaCommitted(input.identity.operationId)
+    } catch {
+      return { kind: 'indeterminate', reason: 'journal-uncertain', operation: input.identity }
+    }
+  }
+
+  let outcome: 'created' | 'duplicate'
   try {
     outcome = await deps.repository.create(input.memory)
   } catch (error) {
     if (isStorageGate(error)) throw error
     const uncertain = isIndeterminateFailure(error)
-    if (uncertain) {
-      return { kind: 'indeterminate', reason: uncertain, operation: input.identity }
-    }
+    if (uncertain) return { kind: 'indeterminate', reason: uncertain, operation: input.identity }
     const cleaned = await compensateKnownFailure(deps, input)
-    return retryResult(input.identity, isCapacityFailure(error) ? 'low-storage' : 'database-commit-failed', !cleaned)
-  }
-
-  if (outcome === 'conflict') {
-    const conflict = await findById(deps.repository, input.identity.memoryId)
-    if (conflict) return conflictResult(input.identity, conflict)
-    return retryResult(input.identity, 'operation-conflict')
+    return retryResult(
+      input.identity,
+      isCapacityFailure(error) ? 'low-storage' : 'database-commit-failed',
+      !cleaned,
+    )
   }
 
   if (outcome === 'duplicate') {
     const duplicate = await findById(deps.repository, input.identity.memoryId)
     if (!duplicate) {
-      return {
-        kind: 'indeterminate',
-        reason: 'database-commit-uncertain',
-        operation: input.identity,
-      }
+      return { kind: 'indeterminate', reason: 'database-commit-uncertain', operation: input.identity }
     }
-    if (!sameMemory(duplicate, input.memory)) {
-      return conflictResult(input.identity, duplicate)
+    const resolved = await resolveExisting(deps, input.identity, duplicate, input.memory)
+    if (resolved.kind === 'saved') {
+      return finishSaved(deps.journal, input.identity, resolved.memory)
     }
-    const forgotten = await forgetJournal(deps.journal, input.identity.operationId)
-    if (!forgotten) {
-      return {
-        kind: 'indeterminate',
-        reason: 'journal-uncertain',
-        operation: input.identity,
-      }
-    }
-    return { kind: 'saved', memory: duplicate }
+    return resolved
   }
 
-  const forgotten = await forgetJournal(deps.journal, input.identity.operationId)
-  if (!forgotten) {
-    return {
-      kind: 'indeterminate',
-      reason: 'post-commit-verification-failed',
-      operation: input.identity,
-    }
+  return finishSaved(deps.journal, input.identity, input.memory)
+}
+
+async function removeFinalIfUnreferenced(
+  repository: MemoryRepositoryPort,
+  mediaStore: Pick<SaveMediaPort, 'removeFinal'> | undefined,
+  relativePath: string | null,
+): Promise<boolean> {
+  if (!relativePath) return true
+  if (!mediaStore) return false
+  if (!(await finalIsUnreferenced(repository, relativePath))) return true
+  try {
+    await mediaStore.removeFinal(relativePath)
+    return true
+  } catch {
+    return false
   }
-  return { kind: 'saved', memory: input.memory }
+}
+
+async function removeJournalOrThrow(
+  journal: SaveJournalPort,
+  operationId: string,
+): Promise<void> {
+  try {
+    await journal.remove(operationId)
+  } catch {
+    throw new SaveReconciliationError('journal-failed')
+  }
+}
+
+async function reconcileExistingReview(
+  repository: MemoryRepositoryPort,
+  operation: SaveOperationRecord,
+  existing: MemoryEntryV1,
+): Promise<MemoryEntryV1> {
+  if (
+    existing.kind !== 'voice'
+    || operation.memory.kind !== 'voice'
+    || existing.reviewedTranscript === operation.memory.reviewedTranscript
+  ) {
+    return existing
+  }
+  try {
+    const outcome = await repository.updateReviewedTranscript(
+      operation.identity.memoryId,
+      operation.memory.reviewedTranscript,
+    )
+    if (outcome === 'missing') throw new Error('memory disappeared during reconciliation')
+    const updated = await findById(repository, operation.identity.memoryId)
+    if (
+      !updated
+      || !sameRetryContent(updated, operation.memory)
+      || updated.reviewedTranscript !== operation.memory.reviewedTranscript
+    ) {
+      throw new Error('reviewed transcript could not be verified')
+    }
+    return updated
+  } catch {
+    throw new SaveReconciliationError('journal-failed')
+  }
 }
 
 /**
- * Reconciles only durable operations left in the journal. A missing row is
- * Not saved and its recognized final media is removed; an existing matching
- * row is Saved. It never creates a row during reconciliation.
+ * Reconciles only durable operations left in the journal. Reconciliation
+ * never creates a catalog row: a row is Saved only when the database already
+ * made it visible. An absent row is Not saved and its recognized final is
+ * removed. Same-identity retries continue a prepared operation in the normal
+ * save path before bootstrap reconciliation runs.
  */
 export async function reconcileSaveOperations(deps: {
   repository: MemoryRepositoryPort
   mediaStore?: Pick<SaveMediaPort, 'removeFinal' | 'reconcileFinal'>
   journal?: SaveJournalPort
 }): Promise<SaveReconciliationResult[]> {
-  if (!deps.journal) return []
+  const journal = deps.journal
+  if (!journal) return []
   let operations: SaveOperationRecord[]
   try {
-    operations = await deps.journal.listPending()
+    operations = await journal.listPending()
   } catch {
     throw new SaveReconciliationError('journal-failed')
   }
@@ -456,6 +572,7 @@ export async function reconcileSaveOperations(deps: {
         throw new SaveReconciliationError('cleanup-failed')
       }
     }
+
     let existing: MemoryEntryV1 | null
     try {
       existing = await findById(deps.repository, operation.identity.memoryId)
@@ -464,50 +581,109 @@ export async function reconcileSaveOperations(deps: {
     }
 
     if (existing) {
-      if (!sameMemory(existing, operation.memory)) {
-        throw new SaveReconciliationError('conflict')
+      if (!sameRetryContent(existing, operation.memory)) {
+        const cleaned = await removeFinalIfUnreferenced(
+          deps.repository,
+          deps.mediaStore,
+          finalPresent ? operation.relativePath : null,
+        )
+        if (cleaned) {
+          try {
+            await journal.remove(operation.identity.operationId)
+          } catch {
+            results.push({
+              kind: 'conflict',
+              operationId: operation.identity.operationId,
+              existing,
+              cleanupPending: true,
+            })
+            continue
+          }
+        }
+        results.push({
+          kind: 'conflict',
+          operationId: operation.identity.operationId,
+          existing,
+          ...(cleaned ? {} : { cleanupPending: true }),
+        })
+        continue
       }
-      try {
-        await deps.journal.remove(operation.identity.operationId)
-      } catch {
-        throw new SaveReconciliationError('journal-failed')
-      }
-      results.push({ kind: 'saved', operationId: operation.identity.operationId, memory: existing })
+      const resolved = await reconcileExistingReview(deps.repository, operation, existing)
+      await removeJournalOrThrow(journal, operation.identity.operationId)
+      results.push({ kind: 'saved', operationId: operation.identity.operationId, memory: resolved })
       continue
     }
 
-    if (operation.relativePath && deps.mediaStore && finalPresent) {
-      let referenced = false
+    if (!finalPresent || operation.phase === 'media-committed') {
+      const cleaned = await removeFinalIfUnreferenced(
+        deps.repository,
+        deps.mediaStore,
+        finalPresent ? operation.relativePath : null,
+      )
+      if (!cleaned) throw new SaveReconciliationError('cleanup-failed')
+      await removeJournalOrThrow(journal, operation.identity.operationId)
+      results.push({
+        kind: 'not-saved',
+        operationId: operation.identity.operationId,
+        reason: 'commit-not-observed',
+      })
+      continue
+    }
+
+    // Prepared + final present is the process-death gap after media moved.
+    // Continue the exact operation rather than deleting the recognized file.
+    if (operation.relativePath) {
       try {
-        referenced = (await deps.repository.findNewestFirst()).some(
-          (memory) => memory.id !== operation.identity.memoryId
-            && memory.media?.relativePath === operation.relativePath,
-        )
+        await journal.markMediaCommitted(operation.identity.operationId)
       } catch {
         throw new SaveReconciliationError('journal-failed')
       }
-      if (referenced) throw new SaveReconciliationError('conflict')
-      try {
-        await deps.mediaStore.removeFinal(operation.relativePath)
-      } catch (error) {
-        if (isStorageGate(error)) throw error
-        throw new SaveReconciliationError('cleanup-failed')
-      }
     }
+
+    let outcome: 'created' | 'duplicate'
     try {
-      await deps.journal.remove(operation.identity.operationId)
-    } catch {
+      outcome = await deps.repository.create(operation.memory)
+    } catch (error) {
+      if (isIndeterminateFailure(error)) throw new SaveReconciliationError('journal-failed')
+      const cleaned = await removeFinalIfUnreferenced(
+        deps.repository,
+        deps.mediaStore,
+        finalPresent ? operation.relativePath : null,
+      )
+      if (!cleaned) throw new SaveReconciliationError('cleanup-failed')
+      await removeJournalOrThrow(journal, operation.identity.operationId)
+      results.push({
+        kind: 'not-saved',
+        operationId: operation.identity.operationId,
+        reason: 'commit-not-observed',
+      })
+      continue
+    }
+
+    if (outcome === 'duplicate') {
+      const duplicate = await findById(deps.repository, operation.identity.memoryId)
+      if (!duplicate) throw new SaveReconciliationError('journal-failed')
+      if (!sameRetryContent(duplicate, operation.memory)) {
+        results.push({
+          kind: 'conflict',
+          operationId: operation.identity.operationId,
+          existing: duplicate,
+        })
+        continue
+      }
+      const resolved = await reconcileExistingReview(deps.repository, operation, duplicate)
+      await removeJournalOrThrow(journal, operation.identity.operationId)
+      results.push({ kind: 'saved', operationId: operation.identity.operationId, memory: resolved })
+      continue
+    }
+
+    const committed = await findById(deps.repository, operation.identity.memoryId)
+    if (!committed || !sameRetryContent(committed, operation.memory)) {
       throw new SaveReconciliationError('journal-failed')
     }
-    results.push({
-      kind: 'not-saved',
-      operationId: operation.identity.operationId,
-      reason: 'commit-not-observed',
-    })
+    const resolved = await reconcileExistingReview(deps.repository, operation, committed)
+    await removeJournalOrThrow(journal, operation.identity.operationId)
+    results.push({ kind: 'saved', operationId: operation.identity.operationId, memory: resolved })
   }
   return results
-}
-
-export function isSaveIndeterminate(result: ReliableSaveResult): result is Extract<ReliableSaveResult, { kind: 'indeterminate' }> {
-  return result.kind === 'indeterminate'
 }
