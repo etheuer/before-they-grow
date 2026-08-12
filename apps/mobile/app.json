@@ -18,7 +18,8 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.beforetheygrow.mobile",
       "infoPlist": {
-        "NSFaceIDUsageDescription": "Use Face ID to keep your private family space locked when you are away."
+        "NSFaceIDUsageDescription": "Use Face ID to keep your private family space locked when you are away.",
+        "NSSpeechRecognitionUsageDescription": "Before They Grow can draft your child's words on this device so you can review them before saving. Recognition only ever runs on your phone."
       }
     },
     "android": {

@@ -1,6 +1,6 @@
 {
   "platforms": ["ios"],
   "ios": {
-    "modules": ["BtgNativeModule"]
+    "modules": ["BtgNativeModule", "BtgTranscriptionModule"]
   }
 }

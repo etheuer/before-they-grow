@@ -20,6 +20,14 @@ const forbiddenNeutralSource = [
   ],
 ]
 
+// Criterion for the native transcription slice: no cloud/network/third-party
+// speech recognizer may be introduced. Recognizers that can fall back to a
+// network service are forbidden outright.
+const forbiddenTranscription = [
+  ['cloud/network speech SDK', /@google-cloud\/speech|azure-cognitiveservices-speech|@azure\/ai-speech|react-native-voice|@react-native-voice|network speeCH/i],
+  ['explicit network speech call', /speeCH\.(?:recognize|transcribe)|recognizer\.start\(.*network|networkSpeech/i],
+]
+
 async function sourceFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
   const files = await Promise.all(entries.map(async (entry) => {
@@ -40,6 +48,9 @@ for (const root of sourceRoots) {
       : forbiddenSource
     for (const [label, pattern] of patterns) {
       if (pattern.test(contents)) violations.push(`${file}: ${label}`)
+    }
+    for (const [label, pattern] of forbiddenTranscription) {
+      if (pattern.test(contents)) violations.push(`${file}: forbidden ${label}`)
     }
   }
 }

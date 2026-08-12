@@ -18,3 +18,38 @@ function native() {
 export function setExcludedFromBackup(path: string, excluded: boolean): Promise<boolean> {
   return native().setExcludedFromBackup(path, excluded)
 }
+
+/**
+ * Lazy access to the BtgTranscription native module (iOS only). The JS side
+ * never calls it where the platform has no verified on-device path, and it
+ * never falls back to a network recognizer.
+ */
+function transcriptionNative() {
+  return requireNativeModule('BtgTranscription') as {
+    isOnDeviceAvailable(): Promise<boolean>
+    requestPermission(): Promise<boolean>
+    transcribeFile(uri: string, sessionId: string): Promise<{
+      kind: 'draft' | 'unavailable' | 'failed'
+      text?: string
+      sessionId?: string
+    }>
+  }
+}
+
+export type TranscriptionNativeResult = {
+  kind: 'draft' | 'unavailable' | 'failed'
+  text?: string
+  sessionId?: string
+}
+
+export function isTranscriptionOnDeviceAvailable(): Promise<boolean> {
+  return transcriptionNative().isOnDeviceAvailable()
+}
+
+export function requestTranscriptionPermission(): Promise<boolean> {
+  return transcriptionNative().requestPermission()
+}
+
+export function transcribeFile(uri: string, sessionId: string): Promise<TranscriptionNativeResult> {
+  return transcriptionNative().transcribeFile(uri, sessionId)
+}

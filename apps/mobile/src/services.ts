@@ -23,6 +23,7 @@ import {
   type SaveManualMemoryResult,
   type SaveVoiceMemoryInput,
   type SaveVoiceMemoryResult,
+  type TranscriptionOutcome,
   type ValidateCapturedAudioResult,
 } from '@before-they-grow/application'
 import {
@@ -39,6 +40,8 @@ import { createExpoAudioRecorderPort } from './adapters/expoAudioRecorder'
 import { createExpoAudioPlayerPort } from './adapters/expoAudioPlayer'
 import { createExpoMediaInspectorPort } from './adapters/expoMediaInspector'
 import { createExpoMediaStorePort } from './adapters/expoMediaStore'
+import { createExpoTranscriberPort } from './adapters/expoTranscriber'
+import { createTranscriptionCoordinator } from '@before-they-grow/application'
 
 export type ProtectedAreaServices = {
   /** Opens and verifies family storage, then returns the protected-area state. */
@@ -59,6 +62,10 @@ export type ProtectedAreaServices = {
   subscribeRecording(listener: () => void): () => void
   validateCapturedAudio(captured: CapturedAudio): Promise<ValidateCapturedAudioResult>
   saveVoiceMemory(input: SaveVoiceMemoryInput): Promise<SaveVoiceMemoryResult>
+  // --- native transcription (#35) ---
+  startTranscription(uri: string): Promise<TranscriptionOutcome>
+  cancelTranscription(): Promise<void>
+  invalidateTranscription(): void
   // --- playback ---
   playMemory(relativePath: string): Promise<void>
   playUri(uri: string): Promise<void>
@@ -112,6 +119,8 @@ export function createProtectedAreaServices(
   const player: AudioPlayerPort = createExpoAudioPlayerPort()
   const inspector: MediaInspectorPort = createExpoMediaInspectorPort()
   const mediaStore: MediaStorePort = createExpoMediaStorePort(exclusion)
+  const transcriberPort = createExpoTranscriberPort()
+  const transcriber = createTranscriptionCoordinator({ transcriber: transcriberPort })
 
   return {
     async bootstrap(date = now()) {
@@ -158,6 +167,19 @@ export function createProtectedAreaServices(
     },
     async validateCapturedAudio(captured) {
       return finalizeVoiceCapture({ inspector }, captured)
+    },
+    async startTranscription(uri) {
+      // Availability is verified before any speech permission is requested;
+      // an unavailable platform never asks and never starts a recognizer.
+      if (!(await transcriberPort.isOnDeviceAvailable())) return { kind: 'unavailable' }
+      await transcriberPort.requestPermissionIfNeeded()
+      return transcriber.start(uri)
+    },
+    async cancelTranscription() {
+      await transcriber.cancel()
+    },
+    invalidateTranscription() {
+      transcriber.invalidate()
     },
     async saveVoiceMemory(input) {
       const { memory } = await getRepositorySet()

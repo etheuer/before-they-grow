@@ -9,6 +9,7 @@ import type {
   CreateProfileInput,
   CreateProfileResult,
   ProtectedHomeState,
+  TranscriptionOutcome,
   ValidateCapturedAudioResult,
 } from '@before-they-grow/application'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
@@ -61,12 +62,14 @@ function fakeProtectedArea(options: {
   timelineFailures?: number
   captureResult?: ValidateCapturedAudioResult
   saveVoiceResult?: 'saved' | 'duplicate' | 'save-failed'
+  transcription?: TranscriptionOutcome | 'deferred'
 } = {}): ProtectedAreaServices & {
   creates: CreateProfileInput[]
   bootstrapCalls: number
   savedManual: Array<{ transcript: string; recordingWasAvailable: boolean }>
   savedVoice: Array<{ reviewedTranscript: string; validatedMediaUri: string }>
   played: string[]
+  resolveTranscription: ((outcome: TranscriptionOutcome) => void) | null
 } {
   const state = {
     creates: [] as CreateProfileInput[],
@@ -77,14 +80,28 @@ function fakeProtectedArea(options: {
     played: [] as string[],
     memories: [...(options.memories ?? [])],
     timelineLoads: 0,
+    transcribeResolvers: [] as Array<(outcome: TranscriptionOutcome) => void>,
   }
-  return {
+  const api: ProtectedAreaServices & {
+    creates: CreateProfileInput[]
+    bootstrapCalls: number
+    savedManual: Array<{ transcript: string; recordingWasAvailable: boolean }>
+    savedVoice: Array<{ reviewedTranscript: string; validatedMediaUri: string }>
+    played: string[]
+    resolveTranscription: ((outcome: TranscriptionOutcome) => void) | null
+  } = {
     creates: state.creates,
     savedManual: state.savedManual,
     savedVoice: state.savedVoice,
     played: state.played,
     get bootstrapCalls() {
       return state.bootstrapCalls
+    },
+    get resolveTranscription() {
+      return (outcome: TranscriptionOutcome) => {
+        const resolve = state.transcribeResolvers.shift()
+        if (resolve) resolve(outcome)
+      }
     },
     async bootstrap() {
       state.bootstrapCalls += 1
@@ -166,6 +183,18 @@ function fakeProtectedArea(options: {
         }
       )
     },
+    async startTranscription() {
+      if (options.transcription === 'deferred') {
+        return new Promise<TranscriptionOutcome>((resolve) => {
+          state.transcribeResolvers.push(resolve)
+        })
+      }
+      return options.transcription ?? { kind: 'unavailable' }
+    },
+    async cancelTranscription() {
+      state.transcribeResolvers = []
+    },
+    invalidateTranscription() {},
     async saveVoiceMemory(input) {
       state.savedVoice.push({
         reviewedTranscript: input.reviewedTranscript,
@@ -202,6 +231,7 @@ function fakeProtectedArea(options: {
       return () => undefined
     },
   }
+  return api
 }
 
 const homeWithProfile: ProtectedHomeState = {
@@ -621,6 +651,75 @@ describe('protected area', () => {
     expect(await screen.findByText('Voice memory')).toBeOnTheScreen()
     await fireEvent.press(screen.getByRole('button', { name: 'Play this memory' }))
     expect(area.played).toContain('media/voice-1.m4a')
+  })
+
+  it('pre-fills the editable draft and saves only the parent-reviewed value', async () => {
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      permission: 'granted',
+      transcription: { kind: 'draft', text: 'I saw a rain bow' },
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+
+    await screen.findByText('Review the answer')
+    await waitFor(() => {
+      expect(screen.getByLabelText('Their words (optional)').props.value).toBe('I saw a rain bow')
+    })
+
+    const input = screen.getByLabelText('Their words (optional)')
+    await fireEvent.changeText(input, 'I saw a rainbow')
+    await fireEvent.press(screen.getByRole('button', { name: 'Save voice and words' }))
+
+    expect(await screen.findByText('Saved')).toBeOnTheScreen()
+    expect(area.savedVoice[0].reviewedTranscript).toBe('I saw a rainbow')
+  })
+
+  it('keeps audio-only save available when transcription is unavailable', async () => {
+    const area = fakeProtectedArea({ initial: homeWithProfile, permission: 'granted', transcription: { kind: 'unavailable' } })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+    await screen.findByText('Review the answer')
+
+    const input = screen.getByLabelText('Their words (optional)')
+    expect(input.props.value).toBe('')
+    await fireEvent.press(screen.getByRole('button', { name: 'Save voice' }))
+    expect(await screen.findByText('Saved')).toBeOnTheScreen()
+    expect(area.savedVoice[0].reviewedTranscript).toBe('')
+  })
+
+  it('does not clobber text the parent typed before a late draft arrives', async () => {
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      permission: 'granted',
+      transcription: 'deferred',
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+    await screen.findByText('Review the answer')
+
+    const input = screen.getByLabelText('Their words (optional)')
+    await fireEvent.changeText(input, 'I typed this myself')
+    await act(async () => {
+      if (area.resolveTranscription) area.resolveTranscription({ kind: 'draft', text: 'late draft' })
+    })
+
+    expect(input.props.value).toBe('I typed this myself')
   })
 
   it('shows an unexpected bootstrap failure as a blocked state and recovers on retry', async () => {

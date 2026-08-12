@@ -47,3 +47,10 @@ export {
   type ValidateCapturedAudioResult,
   type ValidatedAudio,
 } from './capture'
+export {
+  createTranscriptionCoordinator,
+  type TranscribeOutcome,
+  type TranscriberPort,
+  type TranscriptionCoordinator,
+  type TranscriptionOutcome,
+} from './transcribe'

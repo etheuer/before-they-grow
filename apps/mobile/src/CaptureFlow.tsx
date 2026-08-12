@@ -66,13 +66,36 @@ export function CaptureFlow({
   const [validated, setValidated] = useState<ValidatedAudio | null>(null)
   const [capturedUri, setCapturedUri] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
   const finalizeLock = useRef(false)
+
+  // Stop any in-flight transcription when the flow unmounts so a late draft
+  // cannot arrive for a review the parent left.
+  useEffect(() => {
+    return () => {
+      void services.cancelTranscription()
+    }
+  }, [services])
+
+  const attemptTranscription = (uri: string) => {
+    setTranscribing(true)
+    void services.startTranscription(uri).then((outcome) => {
+      if (outcome.kind === 'draft' && outcome.text) {
+        // The draft pre-fills the editable field only when the parent has not
+        // already typed their own review text.
+        setReviewText((current) => (current.length === 0 ? outcome.text : current))
+      }
+      setTranscribing(false)
+    })
+  }
 
   const cancel = () => {
     finalizeLock.current = false
     // Always release the microphone so a cancelled recording cannot leak the
     // session or block the next capture.
     void services.cancelRecording()
+    void services.cancelTranscription()
+    setTranscribing(false)
     setStep('idle')
     setTranscript('')
     setReviewText('')
@@ -148,6 +171,9 @@ export function CaptureFlow({
         setValidated(result.media)
         setReviewText('')
         setStep('review')
+        // Best-effort on-device transcription in parallel; it never delays
+        // review and never touches the completed audio.
+        attemptTranscription(captured.uri)
       } else {
         setCapturedUri(null)
         setValidated(null)
@@ -162,7 +188,9 @@ export function CaptureFlow({
 
   const recordAgain = async () => {
     void services.stopPlayback()
+    void services.cancelTranscription()
     setPlaying(false)
+    setTranscribing(false)
     setReviewText('')
     setValidated(null)
     setCapturedUri(null)
@@ -253,6 +281,8 @@ export function CaptureFlow({
 
   const finish = () => {
     finalizeLock.current = false
+    void services.cancelTranscription()
+    setTranscribing(false)
     setTranscript('')
     setReviewText('')
     setValidated(null)
@@ -387,6 +417,11 @@ export function CaptureFlow({
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <ScrollView keyboardShouldPersistTaps="handled">
             <Text style={[styles.fieldLabel, { color: theme.text }]}>Their words (optional)</Text>
+            {transcribing ? (
+              <Text style={[styles.transcribingHint, { color: theme.muted }]}>
+                Transcribing on this device…
+              </Text>
+            ) : null}
             <TextInput
               accessibilityLabel="Their words (optional)"
               multiline
@@ -515,4 +550,5 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   errorText: { fontSize: 15, fontWeight: '600', marginTop: 14 },
+  transcribingHint: { fontSize: 13, marginBottom: 8 },
 })
