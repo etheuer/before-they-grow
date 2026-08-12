@@ -1,5 +1,5 @@
 import { StorageGateError, type MemoryRepositoryPort } from '@before-they-grow/application'
-import type { MemoryEntryV1, MemoryContentKind } from '@before-they-grow/contracts'
+import type { MemoryEntryV1, ManagedMediaReferenceV1, MemoryContentKind } from '@before-they-grow/contracts'
 import type { AgeBand } from '@before-they-grow/domain'
 import type { SqliteClientPort } from './sqliteProfileRepository'
 import { MEMORIES_TABLE } from './sqliteSchema'
@@ -17,9 +17,19 @@ type MemoryRow = {
   local_date: string
   time_zone: string
   media_ref: string | null
+  media_byte_count: number | null
+  media_sha256: string | null
 }
 
 function mapRow(row: MemoryRow): MemoryEntryV1 {
+  const media: ManagedMediaReferenceV1 | null =
+    row.media_ref === null
+      ? null
+      : {
+          relativePath: row.media_ref,
+          byteCount: row.media_byte_count ?? 0,
+          sha256: row.media_sha256 ?? '',
+        }
   return {
     id: row.id,
     kind: row.kind,
@@ -34,7 +44,7 @@ function mapRow(row: MemoryRow): MemoryEntryV1 {
     savedAt: row.saved_at,
     localDate: row.local_date,
     timeZone: row.time_zone,
-    media: null,
+    media,
   }
 }
 
@@ -59,8 +69,8 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
           `INSERT INTO ${MEMORIES_TABLE} (
              id, kind, prompt_id, prompt_question, prompt_follow_up,
              prompt_age_band, reviewed_transcript, captured_at, saved_at,
-             local_date, time_zone, media_ref
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             local_date, time_zone, media_ref, media_byte_count, media_sha256
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             memory.id,
             memory.kind,
@@ -73,7 +83,9 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
             memory.savedAt,
             memory.localDate,
             memory.timeZone,
-            memory.media,
+            memory.media?.relativePath ?? null,
+            memory.media?.byteCount ?? null,
+            memory.media?.sha256 ?? null,
           ],
         )
         return 'created' as const
@@ -98,7 +110,7 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
       const rows = await client.getAll<MemoryRow>(
         `SELECT id, kind, prompt_id, prompt_question, prompt_follow_up,
                 prompt_age_band, reviewed_transcript, captured_at, saved_at,
-                local_date, time_zone, media_ref
+                local_date, time_zone, media_ref, media_byte_count, media_sha256
          FROM ${MEMORIES_TABLE}
          ORDER BY saved_at DESC`,
       )

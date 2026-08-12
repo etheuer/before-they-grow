@@ -30,3 +30,20 @@ export {
   type SaveManualMemoryInput,
   type SaveManualMemoryResult,
 } from './memory'
+export {
+  MAX_CAPTURE_BYTES,
+  MAX_CAPTURE_DURATION_MS,
+  finalizeVoiceCapture,
+  saveVoiceMemory,
+  type AudioPlayerPort,
+  type AudioRecorderPort,
+  type CapturedAudio,
+  type MediaInspectorPort,
+  type MediaStorePort,
+  type RecorderStatus,
+  type SaveVoiceMemoryDeps,
+  type SaveVoiceMemoryInput,
+  type SaveVoiceMemoryResult,
+  type ValidateCapturedAudioResult,
+  type ValidatedAudio,
+} from './capture'

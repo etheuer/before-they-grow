@@ -5,7 +5,7 @@ import {
 } from '@before-they-grow/application'
 import type { NativeProfileV1 } from '@before-they-grow/contracts'
 import type { BackupExclusionPort } from './backupExclusion'
-import { DATABASE_DDL, MEMORIES_TABLE, PROFILES_TABLE } from './sqliteSchema'
+import { DATABASE_DDL_V2, MEMORIES_TABLE, MIGRATION_MEMORIES_V1_TO_V2, PROFILES_TABLE } from './sqliteSchema'
 
 /**
  * Narrows the expo-sqlite surface to exactly what the profile catalog needs,
@@ -82,7 +82,21 @@ export function createSqliteProfileRepository(
     const actualUserVersion = await client.getUserVersion()
     if (actualUserVersion === 0) {
       await client.transaction(async (txn) => {
-        await txn.exec(DATABASE_DDL)
+        await txn.exec(DATABASE_DDL_V2)
+      })
+      await client.setUserVersion(userVersion)
+    } else if (actualUserVersion === 1) {
+      // Forward migration to v2: a v1 catalog that already has the memories
+      // table is rebuilt in place (its CHECK constraints are relaxed for the
+      // voice kind and media metadata); a v1 catalog without it simply gains
+      // the v2 table. The profile catalog is never touched.
+      const hasMemories = await client.tableExists(MEMORIES_TABLE)
+      await client.transaction(async (txn) => {
+        if (hasMemories) {
+          await txn.exec(MIGRATION_MEMORIES_V1_TO_V2)
+        } else {
+          await txn.exec(DATABASE_DDL_V2)
+        }
       })
       await client.setUserVersion(userVersion)
     } else {
@@ -95,10 +109,10 @@ export function createSqliteProfileRepository(
       if (!hasProfiles) throw new StorageGateError('version-unsafe')
       const hasMemories = await client.tableExists(MEMORIES_TABLE)
       if (!hasMemories) {
-        // Additive, idempotent upgrade: pre-memory v1 catalogs gain the
-        // memories table only; nothing existing is touched.
+        // Additive, idempotent repair for a versioned catalog that somehow
+        // lost its memories table; nothing existing is touched.
         await client.transaction(async (txn) => {
-          await txn.exec(DATABASE_DDL)
+          await txn.exec(DATABASE_DDL_V2)
         })
       }
     }

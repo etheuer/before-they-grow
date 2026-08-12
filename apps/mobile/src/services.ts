@@ -2,11 +2,18 @@ import { Platform } from 'react-native'
 import * as Crypto from 'expo-crypto'
 import {
   createProfile,
+  finalizeVoiceCapture,
   loadMemoryTimeline,
   loadProtectedHomeState,
   saveManualMemory,
+  saveVoiceMemory,
+  type AudioPlayerPort,
+  type AudioRecorderPort,
+  type CapturedAudio,
   type CreateProfileInput,
   type CreateProfileResult,
+  type MediaInspectorPort,
+  type MediaStorePort,
   type MemoryRepositoryPort,
   type ProfileRepositoryPort,
   type ProtectedHomeState,
@@ -14,17 +21,24 @@ import {
   type RecordingPermissionState,
   type SaveManualMemoryInput,
   type SaveManualMemoryResult,
+  type SaveVoiceMemoryInput,
+  type SaveVoiceMemoryResult,
+  type ValidateCapturedAudioResult,
 } from '@before-they-grow/application'
 import {
   profileDatabaseFileNameV1,
   profileUserVersion,
   type MemoryEntryV1,
 } from '@before-they-grow/contracts'
-import { createAndroidBackupExclusion, createIosBackupExclusion } from './adapters/backupExclusion'
+import { createAndroidBackupExclusion, createIosBackupExclusion, type BackupExclusionPort } from './adapters/backupExclusion'
 import { createExpoRecordingPermissionPort } from './adapters/expoRecordingPermission'
 import { createExpoSqliteProfileClient } from './adapters/expoSqliteClient'
 import { createSqliteMemoryRepository } from './adapters/sqliteMemoryRepository'
 import { createSqliteProfileRepository } from './adapters/sqliteProfileRepository'
+import { createExpoAudioRecorderPort } from './adapters/expoAudioRecorder'
+import { createExpoAudioPlayerPort } from './adapters/expoAudioPlayer'
+import { createExpoMediaInspectorPort } from './adapters/expoMediaInspector'
+import { createExpoMediaStorePort } from './adapters/expoMediaStore'
 
 export type ProtectedAreaServices = {
   /** Opens and verifies family storage, then returns the protected-area state. */
@@ -37,6 +51,21 @@ export type ProtectedAreaServices = {
   saveManualMemory(input: SaveManualMemoryInput): Promise<SaveManualMemoryResult>
   /** Loads saved Local-only memories newest first. */
   loadMemoryTimeline(): Promise<MemoryEntryV1[]>
+  // --- native voice path (#34) ---
+  startRecording(): Promise<void>
+  stopRecording(): Promise<CapturedAudio>
+  cancelRecording(): Promise<void>
+  recordingStatus(): { recording: boolean; durationMs: number }
+  subscribeRecording(listener: () => void): () => void
+  validateCapturedAudio(captured: CapturedAudio): Promise<ValidateCapturedAudioResult>
+  saveVoiceMemory(input: SaveVoiceMemoryInput): Promise<SaveVoiceMemoryResult>
+  // --- playback ---
+  playMemory(relativePath: string): Promise<void>
+  playUri(uri: string): Promise<void>
+  pausePlayback(): Promise<void>
+  stopPlayback(): Promise<void>
+  isPlaying(): boolean
+  onPlaybackEnded(listener: () => void): () => void
 }
 
 type RepositorySet = {
@@ -59,7 +88,7 @@ export function createProtectedAreaServices(
     if (!opening) {
       opening = (async () => {
         const client = createExpoSqliteProfileClient()
-        const exclusion =
+        const exclusion: BackupExclusionPort =
           Platform.OS === 'ios'
             ? createIosBackupExclusion()
             : createAndroidBackupExclusion()
@@ -78,6 +107,12 @@ export function createProtectedAreaServices(
   }
 
   const permission: RecordingPermissionPort = createExpoRecordingPermissionPort()
+  const recorder: AudioRecorderPort = createExpoAudioRecorderPort()
+  const player: AudioPlayerPort = createExpoAudioPlayerPort()
+  const inspector: MediaInspectorPort = createExpoMediaInspectorPort()
+  const mediaStore: MediaStorePort = createExpoMediaStorePort(
+    Platform.OS === 'ios' ? createIosBackupExclusion() : createAndroidBackupExclusion(),
+  )
 
   return {
     async bootstrap(date = now()) {
@@ -105,6 +140,53 @@ export function createProtectedAreaServices(
     async loadMemoryTimeline() {
       const { memory } = await getRepositorySet()
       return loadMemoryTimeline({ repository: memory })
+    },
+
+    async startRecording() {
+      await recorder.start()
+    },
+    async stopRecording() {
+      return recorder.stop()
+    },
+    async cancelRecording() {
+      await recorder.cancel()
+    },
+    recordingStatus() {
+      return recorder.getStatus()
+    },
+    subscribeRecording(listener) {
+      return recorder.subscribe(listener)
+    },
+    async validateCapturedAudio(captured) {
+      return finalizeVoiceCapture({ inspector }, captured)
+    },
+    async saveVoiceMemory(input) {
+      const { memory } = await getRepositorySet()
+      return saveVoiceMemory(
+        { repository: memory, mediaStore, generateId: () => Crypto.randomUUID() },
+        input,
+      )
+    },
+    async playMemory(relativePath) {
+      const uri = await mediaStore.resolve(relativePath)
+      await player.load(uri)
+      await player.play()
+    },
+    async playUri(uri) {
+      await player.load(uri)
+      await player.play()
+    },
+    async pausePlayback() {
+      await player.pause()
+    },
+    async stopPlayback() {
+      await player.stop()
+    },
+    isPlaying() {
+      return player.isPlaying()
+    },
+    onPlaybackEnded(listener) {
+      return player.onEnded(listener)
     },
   }
 }

@@ -4,10 +4,10 @@ import {
 } from '@before-they-grow/application'
 import type { NativeProfileV1 } from '@before-they-grow/contracts'
 import { createSqliteProfileRepository, type SqliteClientPort, type SqliteTransactionPort } from './sqliteProfileRepository'
-import { DATABASE_DDL, MEMORIES_TABLE, PROFILES_TABLE } from './sqliteSchema'
+import { DATABASE_DDL_V2, MEMORIES_TABLE, PROFILES_TABLE } from './sqliteSchema'
 import type { BackupExclusionPort } from './backupExclusion'
 
-const USER_VERSION = 1
+const USER_VERSION = 2
 const DATABASE_NAME = 'profile-v1.db'
 
 type Row = {
@@ -74,8 +74,13 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
       }
     },
     async exec(sql: string) {
+      if (sql.includes('memories_v2')) {
+        // A v1→v2 migration rebuilds the memories table in place.
+        state.tables.add(MEMORIES_TABLE)
+        return
+      }
       if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL exec: ${sql}`)
-      for (const statement of DATABASE_DDL.split(';')) {
+      for (const statement of DATABASE_DDL_V2.split(';')) {
         if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
         if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
       }
@@ -91,8 +96,13 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
     },
     async transaction<T>(block: (txn: SqliteTransactionPort) => Promise<T>) {
       const txn: SqliteTransactionPort = {
-        async exec(_sql: string) {
-          for (const statement of DATABASE_DDL.split(';')) {
+        async exec(sql: string) {
+          if (sql.includes('memories_v2')) {
+            state.tables.add(MEMORIES_TABLE)
+            return
+          }
+          if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL exec: ${sql}`)
+          for (const statement of DATABASE_DDL_V2.split(';')) {
             if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
             if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
           }
@@ -190,6 +200,7 @@ describe('createSqliteProfileRepository', () => {
     const client = fakeClient({ userVersion: USER_VERSION })
     const exclusion = fakeExclusion()
     client.state.tables.add('profiles')
+    client.state.tables.add('memories')
 
     await repository(client, exclusion).open()
 
@@ -215,15 +226,28 @@ describe('createSqliteProfileRepository', () => {
   })
 
   it('upgrades a pre-memory v1 catalog by adding only the memories table', async () => {
-    const client = fakeClient({ userVersion: USER_VERSION })
+    const client = fakeClient({ userVersion: 1 })
     const exclusion = fakeExclusion()
     client.state.tables.add('profiles')
 
     await repository(client, exclusion).open()
 
+    expect(client.state.userVersion).toBe(USER_VERSION)
     expect(client.state.tables.has('profiles')).toBe(true)
     expect(client.state.tables.has('memories')).toBe(true)
+  })
+
+  it('migrates a v1 catalog that already has a memories table to v2 in place', async () => {
+    const client = fakeClient({ userVersion: 1 })
+    const exclusion = fakeExclusion()
+    client.state.tables.add('profiles')
+    client.state.tables.add('memories')
+
+    await repository(client, exclusion).open()
+
     expect(client.state.userVersion).toBe(USER_VERSION)
+    expect(client.state.tables.has('profiles')).toBe(true)
+    expect(client.state.tables.has('memories')).toBe(true)
   })
 
   it('blocks a catalog at an unexpected database file name', async () => {

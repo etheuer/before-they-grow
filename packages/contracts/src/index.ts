@@ -9,7 +9,7 @@ export const localPersistenceContractVersion = 1 as const
  * enforced structurally: the canonical database file name encodes layout, and
  * the carried schema is verified by table presence (see the mobile catalog).
  */
-export const profileUserVersion = 1 as const
+export const profileUserVersion = 2 as const
 
 /**
  * Canonical file name of the v1 profile catalog. The layout and contract
@@ -19,11 +19,11 @@ export const profileUserVersion = 1 as const
 export const profileDatabaseFileNameV1 = 'profile-v1.db' as const
 
 /**
- * The kind of content a Local-only memory holds. Version 1 ships text-only
- * memories (entered when voice capture was unavailable); media-backed
- * memories arrive with the native voice slice.
+ * The kind of content a Local-only memory holds. Version 2 ships text-only
+ * memories (entered when voice capture was unavailable) and voice memories
+ * (validated native audio, with optional parent-reviewed text).
  */
-export type MemoryContentKind = 'text-only'
+export type MemoryContentKind = 'text-only' | 'voice'
 
 /**
  * Immutable snapshot of the prompt and age band at the time a memory was
@@ -37,8 +37,10 @@ export type PromptSnapshotV1 = {
 }
 
 /**
- * One row of the v1 memory catalog. A text-only memory has no media
- * reference; its reviewed transcript is always nonblank.
+ * One row of the memory catalog. A text-only memory has no media reference
+ * and a nonblank reviewed transcript; a voice memory carries validated media
+ * metadata with an opaque relative path and an optional (possibly empty)
+ * reviewed transcript.
  */
 export type MemoryEntryV1 = {
   id: string
@@ -49,7 +51,7 @@ export type MemoryEntryV1 = {
   savedAt: string
   localDate: string
   timeZone: string
-  media: null
+  media: ManagedMediaReferenceV1 | null
 }
 
 export type NativeProfileV1 = {

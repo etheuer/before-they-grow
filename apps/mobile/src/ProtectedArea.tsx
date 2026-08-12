@@ -132,6 +132,26 @@ function HomeShell({
   const [screen, setScreen] = useState<'tonight' | 'memories'>('tonight')
   const [memories, setMemories] = useState<MemoryEntryV1[]>([])
   const [loadFailed, setLoadFailed] = useState(false)
+  const [playingId, setPlayingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const unsubscribe = services.onPlaybackEnded(() => setPlayingId(null))
+    return () => {
+      unsubscribe()
+      void services.stopPlayback()
+    }
+  }, [services])
+
+  const togglePlay = async (memory: MemoryEntryV1) => {
+    if (!memory.media) return
+    if (playingId === memory.id) {
+      await services.pausePlayback()
+      setPlayingId(null)
+      return
+    }
+    await services.playMemory(memory.media.relativePath)
+    setPlayingId(memory.id)
+  }
 
   const refreshTimeline = () => {
     void services
@@ -158,6 +178,8 @@ function HomeShell({
       <TimelineScreen
         memories={memories}
         childNickname={profile.childNickname}
+        playingId={playingId}
+        onTogglePlay={(memory) => void togglePlay(memory)}
         onBack={() => setScreen('tonight')}
         onAnswerTonight={() => setScreen('tonight')}
         onRetry={() => refreshTimeline()}
@@ -506,8 +528,7 @@ function TonightScreen({
               ageBand,
             }}
             theme={theme}
-            requestRecordingPermission={services.requestRecordingPermission}
-            saveManualMemory={services.saveManualMemory}
+            services={services}
             onSaved={onSaved}
             onStorageBlocked={onStorageBlocked}
           />

@@ -5,21 +5,57 @@ import { ActionButton } from './components/ActionButton'
 import { formatDisplayDate } from './format'
 import type { Theme } from './theme'
 
-function MemoryRow({ memory, theme }: { memory: MemoryEntryV1; theme: Theme }) {
+function MemoryRow({
+  memory,
+  playing,
+  onTogglePlay,
+  theme,
+}: {
+  memory: MemoryEntryV1
+  playing: boolean
+  onTogglePlay: () => void
+  theme: Theme
+}) {
   return (
     <View
-      accessibilityLabel={`${formatDisplayDate(memory.localDate)}, ${memory.promptSnapshot.question}: ${memory.reviewedTranscript}`}
+      accessibilityLabel={
+        memory.media
+          ? `${formatDisplayDate(memory.localDate)}, ${memory.promptSnapshot.question}: a voice memory${
+              memory.reviewedTranscript ? `: ${memory.reviewedTranscript}` : ''
+            }`
+          : `${formatDisplayDate(memory.localDate)}, ${memory.promptSnapshot.question}: ${memory.reviewedTranscript}`
+      }
       style={[styles.memoryCard, { backgroundColor: theme.surface, borderColor: theme.border }]}
     >
-      <Text style={[styles.memoryDate, { color: theme.primary }]}>
-        {formatDisplayDate(memory.localDate)}
-      </Text>
+      <View style={styles.memoryTop}>
+        <Text style={[styles.memoryDate, { color: theme.primary }]}>
+          {formatDisplayDate(memory.localDate)}
+        </Text>
+        {memory.media ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={playing ? 'Pause this memory' : 'Play this memory'}
+            onPress={onTogglePlay}
+            style={({ pressed }) => [
+              styles.playButton,
+              { backgroundColor: theme.quietAccent },
+              pressed ? styles.pressed : null,
+            ]}
+          >
+            <Text style={[styles.playLabel, { color: theme.text }]}>{playing ? '❚❚' : '▶'}</Text>
+          </Pressable>
+        ) : null}
+      </View>
       <Text style={[styles.memoryQuestion, { color: theme.muted }]}>
         {memory.promptSnapshot.question}
       </Text>
-      <Text style={[styles.memoryText, { color: theme.text }]}>
-        “{memory.reviewedTranscript}”
-      </Text>
+      {memory.media && memory.reviewedTranscript.length === 0 ? (
+        <Text style={[styles.memoryText, { color: theme.text }]}>Voice memory</Text>
+      ) : (
+        <Text style={[styles.memoryText, { color: theme.text }]}>
+          “{memory.reviewedTranscript}”
+        </Text>
+      )}
     </View>
   )
 }
@@ -27,6 +63,8 @@ function MemoryRow({ memory, theme }: { memory: MemoryEntryV1; theme: Theme }) {
 export function TimelineScreen({
   memories,
   childNickname,
+  playingId,
+  onTogglePlay,
   onBack,
   onAnswerTonight,
   onRetry,
@@ -35,6 +73,8 @@ export function TimelineScreen({
 }: {
   memories: MemoryEntryV1[]
   childNickname: string
+  playingId: string | null
+  onTogglePlay: (memory: MemoryEntryV1) => void
   onBack: () => void
   onAnswerTonight: () => void
   onRetry: () => void
@@ -97,7 +137,13 @@ export function TimelineScreen({
           ) : (
             <View style={styles.list}>
               {memories.map((memory) => (
-                <MemoryRow key={memory.id} memory={memory} theme={theme} />
+                <MemoryRow
+                  key={memory.id}
+                  memory={memory}
+                  playing={playingId === memory.id}
+                  onTogglePlay={() => onTogglePlay(memory)}
+                  theme={theme}
+                />
               ))}
             </View>
           )}
@@ -125,6 +171,15 @@ const styles = StyleSheet.create({
   title: { fontSize: 32, fontWeight: '700', letterSpacing: -1, lineHeight: 38, marginTop: 18 },
   subtitle: { fontSize: 15, lineHeight: 22, marginTop: 6 },
   list: { gap: 14, marginTop: 22 },
+  memoryTop: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  playButton: {
+    alignItems: 'center',
+    borderRadius: 999,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  playLabel: { fontSize: 14, fontWeight: '800' },
   memoryCard: { borderRadius: 16, borderWidth: 1, padding: 16 },
   memoryDate: { fontSize: 13, fontWeight: '800', textTransform: 'uppercase' },
   memoryQuestion: { fontSize: 15, lineHeight: 22, marginTop: 8 },

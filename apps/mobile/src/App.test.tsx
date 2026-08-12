@@ -9,6 +9,7 @@ import type {
   CreateProfileInput,
   CreateProfileResult,
   ProtectedHomeState,
+  ValidateCapturedAudioResult,
 } from '@before-they-grow/application'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import type { ProtectedAreaServices } from './services'
@@ -58,21 +59,29 @@ function fakeProtectedArea(options: {
   memories?: MemoryEntryV1[]
   bootstrapFailures?: number
   timelineFailures?: number
+  captureResult?: ValidateCapturedAudioResult
 } = {}): ProtectedAreaServices & {
   creates: CreateProfileInput[]
   bootstrapCalls: number
   savedManual: Array<{ transcript: string; recordingWasAvailable: boolean }>
+  savedVoice: Array<{ reviewedTranscript: string; validatedMediaUri: string }>
+  played: string[]
 } {
   const state = {
     creates: [] as CreateProfileInput[],
     bootstrapCalls: 0,
+    recording: false,
     savedManual: [] as Array<{ transcript: string; recordingWasAvailable: boolean }>,
+    savedVoice: [] as Array<{ reviewedTranscript: string; validatedMediaUri: string }>,
+    played: [] as string[],
     memories: [...(options.memories ?? [])],
     timelineLoads: 0,
   }
   return {
     creates: state.creates,
     savedManual: state.savedManual,
+    savedVoice: state.savedVoice,
+    played: state.played,
     get bootstrapCalls() {
       return state.bootstrapCalls
     },
@@ -131,6 +140,63 @@ function fakeProtectedArea(options: {
       }
       state.timelineLoads += 1
       return [...state.memories]
+    },
+    async startRecording() {
+      state.recording = true
+    },
+    async stopRecording() {
+      state.recording = false
+      return { uri: 'file:///cache/rec.m4a', durationMs: 12000 }
+    },
+    async cancelRecording() {
+      state.recording = false
+    },
+    recordingStatus() {
+      return { recording: state.recording, durationMs: state.recording ? 4000 : 0 }
+    },
+    subscribeRecording() {
+      return () => undefined
+    },
+    async validateCapturedAudio() {
+      return (
+        options.captureResult ?? {
+          kind: 'valid',
+          media: { uri: 'file:///cache/rec.m4a', durationMs: 12000, byteCount: 1000, sha256: 'abc' },
+        }
+      )
+    },
+    async saveVoiceMemory(input) {
+      state.savedVoice.push({
+        reviewedTranscript: input.reviewedTranscript,
+        validatedMediaUri: input.validatedMedia.uri,
+      })
+      const memory: MemoryEntryV1 = {
+        id: `voice-${state.savedVoice.length}`,
+        kind: 'voice',
+        promptSnapshot: input.promptSnapshot,
+        reviewedTranscript: input.reviewedTranscript,
+        capturedAt: input.now.toISOString(),
+        savedAt: input.now.toISOString(),
+        localDate: '2026-08-11',
+        timeZone: 'UTC',
+        media: { relativePath: `media/voice-${state.savedVoice.length}.m4a`, byteCount: 1000, sha256: 'abc' },
+      }
+      state.memories = [memory, ...state.memories]
+      return { kind: 'saved', memory }
+    },
+    async playMemory(relativePath) {
+      state.played.push(relativePath)
+    },
+    async playUri(uri) {
+      state.played.push(uri)
+    },
+    async pausePlayback() {},
+    async stopPlayback() {},
+    isPlaying() {
+      return false
+    },
+    onPlaybackEnded() {
+      return () => undefined
     },
   }
 }
@@ -381,7 +447,7 @@ describe('protected area', () => {
     await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
     await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
 
-    expect(await screen.findByText('Microphone is ready')).toBeOnTheScreen()
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
     expect(screen.queryByText('No voice was captured')).toBeNull()
     expect(screen.queryByLabelText('Their answer in writing')).toBeNull()
     expect(area.savedManual).toHaveLength(0)
@@ -431,6 +497,88 @@ describe('protected area', () => {
     await fireEvent.press(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByText('“I made my bed by myself.”')).toBeOnTheScreen()
   })
+  it('records, validates, reviews, and saves a voice memory (audio-only)', async () => {
+    const area = fakeProtectedArea({ initial: homeWithProfile, permission: 'granted' })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+
+    expect(await screen.findByText('Review the answer')).toBeOnTheScreen()
+    expect(screen.getByRole('button', { name: 'Play' })).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Save voice' }))
+    expect(await screen.findByText('Saved')).toBeOnTheScreen()
+    expect(area.savedVoice).toHaveLength(1)
+    expect(area.savedVoice[0]).toEqual({
+      reviewedTranscript: '',
+      validatedMediaUri: 'file:///cache/rec.m4a',
+    })
+  })
+
+  it('saves audio-plus-text when words are entered in review', async () => {
+    const area = fakeProtectedArea({ initial: homeWithProfile, permission: 'granted' })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+    expect(await screen.findByText('Review the answer')).toBeOnTheScreen()
+
+    await fireEvent.changeText(screen.getByLabelText('Their words (optional)'), '  Made my bed!  ')
+    expect(screen.getByRole('button', { name: 'Save voice and words' })).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Save voice and words' }))
+
+    expect(await screen.findByText('Saved')).toBeOnTheScreen()
+    expect(area.savedVoice[0].reviewedTranscript).toBe('  Made my bed!  ')
+  })
+
+  it('rejects an invalid recording and offers to record again', async () => {
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      permission: 'granted',
+      captureResult: { kind: 'not-decodable' },
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+
+    expect(await screen.findByText("This recording can't be saved")).toBeOnTheScreen()
+    expect(area.savedVoice).toHaveLength(0)
+  })
+
+  it('plays and pauses a voice memory in the timeline', async () => {
+    const voice = {
+      ...memoryEntry('v1', '2026-08-11', 'Voice memory'),
+      kind: 'voice' as const,
+      reviewedTranscript: '',
+      media: { relativePath: 'media/v1.m4a', byteCount: 1000, sha256: 'abc' },
+    }
+    const area = fakeProtectedArea({ initial: homeWithProfile, memories: [voice] })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'View 1 memory' }))
+    expect(await screen.findByText('Voice memory')).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Play this memory' }))
+    expect(area.played).toEqual(['media/v1.m4a'])
+    expect(screen.getByRole('button', { name: 'Pause this memory' })).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Pause this memory' }))
+    expect(screen.getByRole('button', { name: 'Play this memory' })).toBeOnTheScreen()
+  })
+
   it('shows an unexpected bootstrap failure as a blocked state and recovers on retry', async () => {
     const area = fakeProtectedArea({ initial: homeWithProfile, bootstrapFailures: 1 })
     await renderShell(fakeAuthentication('available', ['authenticated']), area)

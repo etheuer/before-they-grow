@@ -1,7 +1,7 @@
 import { StorageGateError } from '@before-they-grow/application'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import { createSqliteMemoryRepository } from './sqliteMemoryRepository'
-import { DATABASE_DDL, MEMORIES_TABLE, PROFILES_TABLE } from './sqliteSchema'
+import { DATABASE_DDL_V2, MEMORIES_TABLE, PROFILES_TABLE } from './sqliteSchema'
 import type { SqliteClientPort, SqliteTransactionPort } from './sqliteProfileRepository'
 
 type MemoryRow = {
@@ -17,6 +17,8 @@ type MemoryRow = {
   local_date: string
   time_zone: string
   media_ref: string | null
+  media_byte_count: number | null
+  media_sha256: string | null
 }
 
 function fakeClient() {
@@ -48,7 +50,7 @@ function fakeClient() {
     },
     async run() {},
     async exec(_sql: string) {
-      for (const statement of DATABASE_DDL.split(';')) {
+      for (const statement of DATABASE_DDL_V2.split(';')) {
         if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
         if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
       }
@@ -67,7 +69,7 @@ function fakeClient() {
     async transaction<T>(block: (txn: SqliteTransactionPort) => Promise<T>) {
       const txn: SqliteTransactionPort = {
         async exec() {
-          for (const statement of DATABASE_DDL.split(';')) {
+          for (const statement of DATABASE_DDL_V2.split(';')) {
             if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
             if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
           }
@@ -80,7 +82,7 @@ function fakeClient() {
             const [
               id, kind, prompt_id, prompt_question, prompt_follow_up,
               prompt_age_band, reviewed_transcript, captured_at, saved_at,
-              local_date, time_zone, media_ref,
+              local_date, time_zone, media_ref, media_byte_count, media_sha256,
             ] = params
             state.memories.push({
               id: String(id),
@@ -95,6 +97,8 @@ function fakeClient() {
               local_date: String(local_date),
               time_zone: String(time_zone),
               media_ref: media_ref as string | null,
+              media_byte_count: media_byte_count as number | null,
+              media_sha256: media_sha256 as string | null,
             })
             return
           }
@@ -133,6 +137,18 @@ const memory: MemoryEntryV1 = {
   media: null,
 }
 
+const voiceMemory: MemoryEntryV1 = {
+  ...memory,
+  id: 'memory-voice-1',
+  kind: 'voice',
+  reviewedTranscript: '',
+  media: {
+    relativePath: 'media/memory-voice-1.m4a',
+    byteCount: 123456,
+    sha256: 'abcd1234',
+  },
+}
+
 describe('createSqliteMemoryRepository', () => {
   it('persists a memory and reports created only after it is queryable', async () => {
     const { client, state } = fakeClient()
@@ -152,6 +168,30 @@ describe('createSqliteMemoryRepository', () => {
 
     expect(await repo.create({ ...memory })).toBe('duplicate')
     expect(state.memories).toHaveLength(1)
+  })
+
+  it('persists a voice memory with media metadata and empty (audio-only) text', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+
+    expect(await repo.create(voiceMemory)).toBe('created')
+    const row = state.memories[0]
+    expect(row.kind).toBe('voice')
+    expect(row.reviewed_transcript).toBe('')
+    expect(row.media_ref).toBe('media/memory-voice-1.m4a')
+    expect(row.media_byte_count).toBe(123456)
+    expect(row.media_sha256).toBe('abcd1234')
+  })
+
+  it('reads a voice memory back with its media reference', async () => {
+    const { client } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    await repo.create(voiceMemory)
+
+    const [loaded] = await repo.findNewestFirst()
+    expect(loaded).toEqual(voiceMemory)
   })
 
   it('returns memories newest first with the full contract mapping', async () => {
@@ -192,8 +232,8 @@ describe('createSqliteMemoryRepository', () => {
     await client.open()
 
     await client.transaction(async (txn) => {
-      await txn.exec(DATABASE_DDL)
-      await txn.exec(DATABASE_DDL)
+      await txn.exec(DATABASE_DDL_V2)
+      await txn.exec(DATABASE_DDL_V2)
     })
 
     expect(state.tables.has(PROFILES_TABLE)).toBe(true)
@@ -209,7 +249,7 @@ describe('createSqliteMemoryRepository', () => {
     // every fresh catalog. DDL must travel via exec().
     await expect(
       client.transaction(async (txn) => {
-        await txn.run(DATABASE_DDL)
+        await txn.run(DATABASE_DDL_V2)
       }),
     ).rejects.toThrow('DDL must go through exec, not run')
   })
