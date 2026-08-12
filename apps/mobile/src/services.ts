@@ -3,9 +3,11 @@ import * as Crypto from 'expo-crypto'
 import {
   createProfile,
   finalizeVoiceCapture,
+  hardDeleteMemory as deleteLocalMemory,
   loadMemoryTimeline,
   loadProtectedHomeState,
   reconcileSaveOperations,
+  resumeFilesystemMigration,
   SaveReconciliationError,
   saveManualMemory,
   saveVoiceMemory,
@@ -15,7 +17,6 @@ import {
   type CreateProfileInput,
   type CreateProfileResult,
   type MediaInspectorPort,
-  type MediaStorePort,
   type MemoryRepositoryPort,
   type ProfileRepositoryPort,
   type ProtectedHomeState,
@@ -28,6 +29,7 @@ import {
   type SaveVoiceMemoryResult,
   StorageGateError,
   type TranscriptionOutcome,
+  type UnavailableMemory,
   type UnsavedRecording,
   type ValidateCapturedAudioResult,
 } from '@before-they-grow/application'
@@ -49,6 +51,7 @@ import { createExpoAudioRecorderPort } from './adapters/expoAudioRecorder'
 import { createExpoAudioPlayerPort } from './adapters/expoAudioPlayer'
 import { createExpoMediaInspectorPort } from './adapters/expoMediaInspector'
 import { createExpoMediaStorePort } from './adapters/expoMediaStore'
+import { storageLayoutVersion } from './adapters/storageRoot'
 import { createExpoTranscriberPort } from './adapters/expoTranscriber'
 import { createTranscriptionCoordinator } from '@before-they-grow/application'
 import { cleanStaleCaptureCache } from './adapters/expoCacheCleanup'
@@ -57,6 +60,8 @@ import { createExpoLifecyclePort } from './adapters/expoLifecycle'
 export type ProtectedBootstrapState = ProtectedHomeState & {
   /** Save outcomes resolved before protected content becomes visible. */
   reconciliation?: SaveReconciliationResult[]
+  /** Referenced audio that stayed in the catalog but cannot be read. */
+  unavailable?: UnavailableMemory[]
 }
 
 export type ProtectedAreaServices = {
@@ -70,6 +75,8 @@ export type ProtectedAreaServices = {
   saveManualMemory(input: SaveManualMemoryInput): Promise<SaveManualMemoryResult>
   /** Loads saved Local-only memories newest first. */
   loadMemoryTimeline(): Promise<MemoryEntryV1[]>
+  /** Irreversible removal of one Local-only memory. */
+  hardDeleteMemory(id: string): Promise<'deleted' | 'missing'>
   /** Takes and clears save results reconciled during the last bootstrap. */
   consumeSaveReconciliationNotice(): SaveReconciliationResult[]
   // --- in-process Unsaved recording (survives the App-lock transition) ---
@@ -93,7 +100,7 @@ export type ProtectedAreaServices = {
   cancelTranscription(): Promise<void>
   invalidateTranscription(): void
   // --- playback ---
-  playMemory(relativePath: string): Promise<void>
+  playMemory(relativePath: string): Promise<'played' | 'unavailable'>
   playUri(uri: string): Promise<void>
   pausePlayback(): Promise<void>
   stopPlayback(): Promise<void>
@@ -102,7 +109,7 @@ export type ProtectedAreaServices = {
 }
 
 type RepositorySet = {
-  profile: ProfileRepositoryPort
+  profile: ProfileRepositoryPort & { consumeUnavailable?: () => UnavailableMemory[] }
   memory: MemoryRepositoryPort
 }
 
@@ -122,6 +129,7 @@ export function createProtectedAreaServices(
   // catalog (inside getRepositorySet) and the media store.
   const exclusion: BackupExclusionPort =
     Platform.OS === 'ios' ? createIosBackupExclusion() : createAndroidBackupExclusion()
+  const mediaStore = createExpoMediaStorePort(exclusion)
 
   const getRepositorySet = (): Promise<RepositorySet> => {
     if (repositorySet) return Promise.resolve(repositorySet)
@@ -133,6 +141,7 @@ export function createProtectedAreaServices(
           exclusion,
           userVersion: profileUserVersion,
           expectedDatabaseFileName: profileDatabaseFileNameV1,
+          inventory: mediaStore,
         })
         const memory = createSqliteMemoryRepository(client)
         repositorySet = { profile, memory }
@@ -146,7 +155,6 @@ export function createProtectedAreaServices(
   const recorder: AudioRecorderPort = createExpoAudioRecorderPort()
   const player: AudioPlayerPort = createExpoAudioPlayerPort()
   const inspector: MediaInspectorPort = createExpoMediaInspectorPort()
-  const mediaStore: MediaStorePort = createExpoMediaStorePort(exclusion)
   const transcriberPort = createExpoTranscriberPort()
   const transcriber = createTranscriptionCoordinator({ transcriber: transcriberPort })
   const unsaved = createTransientCaptureStore()
@@ -181,17 +189,17 @@ export function createProtectedAreaServices(
 
   return {
     async bootstrap(date = now()) {
-      // Stale capture-cache cleanup runs once per process start, never on an
-      // App-lock remount, so an in-process Unsaved recording's file survives
-      // the obscured/unlocked transition; a relaunch starts a fresh process
-      // and clears leftovers.
-      if (!cleanedCacheThisProcess) {
-        cleanedCacheThisProcess = true
-        await cleanStaleCaptureCache()
-      }
       const { profile, memory } = await getRepositorySet()
       try {
         await profile.open()
+        // Recognized stale cache is removed only after the catalog and known
+        // layout validate. An App-lock remount skips this so an in-process
+        // Unsaved recording survives the obscured/unlocked transition.
+        if (!cleanedCacheThisProcess) {
+          cleanedCacheThisProcess = true
+          await cleanStaleCaptureCache()
+        }
+        await resumeFilesystemMigration(mediaStore, storageLayoutVersion)
         const reconciled = await reconcileSaveOperations({
           repository: memory,
           mediaStore,
@@ -204,8 +212,9 @@ export function createProtectedAreaServices(
           clearUnsaved()
         }
         indeterminateStorage = false
+        const unavailable = profile.consumeUnavailable?.() ?? []
         const state = await loadProtectedHomeState({ repository: profile }, date)
-        return { ...state, reconciliation: reconciled }
+        return { ...state, reconciliation: reconciled, unavailable }
       } catch (error) {
         if (error instanceof StorageGateError) {
           return { kind: 'storage-blocked', reason: error.reason }
@@ -277,6 +286,12 @@ export function createProtectedAreaServices(
       return loadMemoryTimeline({ repository: memory })
     },
 
+    async hardDeleteMemory(id) {
+      assertStorageAvailable()
+      const { memory } = await getRepositorySet()
+      return deleteLocalMemory({ repository: memory, mediaStore }, id)
+    },
+
     async startRecording() {
       await recorder.start()
     },
@@ -322,9 +337,20 @@ export function createProtectedAreaServices(
     },
     async playMemory(relativePath) {
       assertStorageAvailable()
+      const { memory } = await getRepositorySet()
+      const withMedia = await memory.findAllWithMedia()
+      const match = withMedia.find((entry) => entry.media?.relativePath === relativePath)
+      if (match?.media) {
+        const health = await mediaStore.verifyPlayback(relativePath, {
+          byteCount: match.media.byteCount,
+          sha256: match.media.sha256,
+        })
+        if (health !== 'ok') return 'unavailable'
+      }
       const uri = await mediaStore.resolve(relativePath)
       await player.load(uri)
       await player.play()
+      return 'played'
     },
     async playUri(uri) {
       assertStorageAvailable()

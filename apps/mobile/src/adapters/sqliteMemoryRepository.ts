@@ -388,5 +388,39 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
       )
       return rows.map(mapRow)
     },
+
+    async findAllWithMedia() {
+      if (!client.isOpen()) throw new StorageGateError('integrity-failed')
+      const rows = await client.getAll<MemoryRow>(
+        `SELECT id, kind, prompt_id, prompt_question, prompt_follow_up,
+                prompt_age_band, reviewed_transcript, captured_at, saved_at,
+                local_date, time_zone, media_ref, media_byte_count, media_sha256
+         FROM ${MEMORIES_TABLE}
+         WHERE media_ref IS NOT NULL`,
+      )
+      return rows.map(mapRow)
+    },
+
+    async remove(id) {
+      if (!client.isOpen()) throw new StorageGateError('integrity-failed')
+      const existing = await client.getAll<{ id: string }>(
+        `SELECT id FROM ${MEMORIES_TABLE} WHERE id = ?`,
+        [id],
+      )
+      if (existing.length === 0) return 'missing' as const
+      try {
+        await client.transaction(async (txn) => {
+          await txn.run(
+            `DELETE FROM ${MEMORIES_TABLE} WHERE id = ?`,
+            [id],
+          )
+        })
+        return 'removed' as const
+      } catch (error) {
+        if (error instanceof StorageGateError) throw error
+        if (isOutOfSpace(error)) throw new SaveCapacityError()
+        throw new SaveIndeterminateError('database-commit-uncertain')
+      }
+    },
   }
 }

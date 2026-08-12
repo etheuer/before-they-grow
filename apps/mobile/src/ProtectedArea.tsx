@@ -14,12 +14,12 @@ import { StatusBar } from 'expo-status-bar'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import {
   StorageGateError,
-  type ProtectedHomeState,
   type StorageBlockReason,
 } from '@before-they-grow/application'
 import { AGE_BANDS, type AgeBand } from '@before-they-grow/domain'
+import type { UnavailableMemory, UnavailableReason } from '@before-they-grow/application'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
-import type { ProtectedAreaServices } from './services'
+import type { ProtectedAreaServices, ProtectedBootstrapState } from './services'
 import { ActionButton } from './components/ActionButton'
 import { CaptureFlow } from './CaptureFlow'
 import { TimelineScreen } from './TimelineScreen'
@@ -50,7 +50,7 @@ const BLOCKED_COPY: Record<StorageBlockReason, string> = {
 
 type BootState =
   | { kind: 'loading' }
-  | ProtectedHomeState
+  | ProtectedBootstrapState
   | { kind: 'failed' }
 
 type OnboardingError = 'invalid-nickname' | 'unexpected' | null
@@ -114,20 +114,29 @@ export function ProtectedArea({ services }: { services: ProtectedAreaServices })
       services={services}
       profile={boot.profile}
       prompt={boot.prompt}
+      initialUnavailable={boot.unavailable ?? []}
       onStorageBlocked={() => void reload()}
     />
   )
+}
+
+function toUnavailableMap(items: UnavailableMemory[]): Record<string, UnavailableReason> {
+  const next: Record<string, UnavailableReason> = {}
+  for (const item of items) next[item.memoryId] = item.reason
+  return next
 }
 
 function HomeShell({
   services,
   profile,
   prompt,
+  initialUnavailable,
   onStorageBlocked,
 }: {
   services: ProtectedAreaServices
   profile: { childNickname: string; ageBand: AgeBand }
   prompt: { id: string; question: string; followUp: string; ageBand: AgeBand }
+  initialUnavailable: UnavailableMemory[]
   onStorageBlocked: () => void
 }) {
   const theme = useTheme()
@@ -135,6 +144,9 @@ function HomeShell({
   const [memories, setMemories] = useState<MemoryEntryV1[]>([])
   const [loadFailed, setLoadFailed] = useState(false)
   const [playingId, setPlayingId] = useState<string | null>(null)
+  const [unavailable, setUnavailable] = useState<Record<string, UnavailableReason>>(
+    () => toUnavailableMap(initialUnavailable),
+  )
 
   useEffect(() => {
     const unsubscribe = services.onPlaybackEnded(() => setPlayingId(null))
@@ -157,14 +169,35 @@ function HomeShell({
   }, [services])
 
   const togglePlay = async (memory: MemoryEntryV1) => {
-    if (!memory.media) return
+    if (!memory.media || unavailable[memory.id]) return
     if (playingId === memory.id) {
       await services.pausePlayback()
       setPlayingId(null)
       return
     }
-    await services.playMemory(memory.media.relativePath)
+    const outcome = await services.playMemory(memory.media.relativePath)
+    if (outcome === 'unavailable') {
+      setUnavailable((current) => ({ ...current, [memory.id]: 'checksum-mismatch' }))
+      setPlayingId(null)
+      return
+    }
     setPlayingId(memory.id)
+  }
+
+  const hardDelete = async (memory: MemoryEntryV1) => {
+    const outcome = await services.hardDeleteMemory(memory.id)
+    if (outcome === 'deleted') {
+      setMemories((current) => current.filter((entry) => entry.id !== memory.id))
+      setUnavailable((current) => {
+        const next = { ...current }
+        delete next[memory.id]
+        return next
+      })
+      if (playingId === memory.id) {
+        await services.stopPlayback()
+        setPlayingId(null)
+      }
+    }
   }
 
   const refreshTimeline = () => {
@@ -193,7 +226,9 @@ function HomeShell({
         memories={memories}
         childNickname={profile.childNickname}
         playingId={playingId}
+        unavailable={unavailable}
         onTogglePlay={(memory) => void togglePlay(memory)}
+        onHardDelete={(memory) => void hardDelete(memory)}
         onBack={() => setScreen('tonight')}
         onAnswerTonight={() => setScreen('tonight')}
         onRetry={() => refreshTimeline()}

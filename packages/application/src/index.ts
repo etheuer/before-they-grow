@@ -31,6 +31,25 @@ export {
   type SaveManualMemoryResult,
 } from './memory'
 export {
+  classifyLayoutVersions,
+  classifyMediaHealth,
+  classifyStorageInventory,
+  hardDeleteMemory,
+  referencedMediaFrom,
+  resumeFilesystemMigration,
+  type FilesystemEntry,
+  type FilesystemEntryKind,
+  type LayoutMigrationPhase,
+  type LayoutMigrationPort,
+  type LayoutMigrationRecord,
+  type MediaPresence,
+  type StorageInventoryPort,
+  type ReferencedMedia,
+  type StorageBootReport,
+  type UnavailableMemory,
+  type UnavailableReason,
+} from './storageBoot'
+export {
   SaveBoundaryError,
   SaveCapacityError,
   SaveIndeterminateError,

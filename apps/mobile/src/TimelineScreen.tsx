@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
+import type { UnavailableReason } from '@before-they-grow/application'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import { ActionButton } from './components/ActionButton'
 import { formatDisplayDate } from './format'
@@ -8,22 +10,30 @@ import type { Theme } from './theme'
 function MemoryRow({
   memory,
   playing,
+  unavailableReason,
   onTogglePlay,
+  onHardDelete,
   theme,
 }: {
   memory: MemoryEntryV1
   playing: boolean
+  unavailableReason?: UnavailableReason
   onTogglePlay: () => void
+  onHardDelete: () => void
   theme: Theme
 }) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const unavailable = unavailableReason !== undefined
   return (
     <View
       accessibilityLabel={
-        memory.media
-          ? `${formatDisplayDate(memory.localDate)}, ${memory.promptSnapshot.question}: a voice memory${
-              memory.reviewedTranscript ? `: ${memory.reviewedTranscript}` : ''
-            }`
-          : `${formatDisplayDate(memory.localDate)}, ${memory.promptSnapshot.question}: ${memory.reviewedTranscript}`
+        unavailable
+          ? `${formatDisplayDate(memory.localDate)}, ${memory.promptSnapshot.question}: unavailable memory`
+          : memory.media
+            ? `${formatDisplayDate(memory.localDate)}, ${memory.promptSnapshot.question}: a voice memory${
+                memory.reviewedTranscript ? `: ${memory.reviewedTranscript}` : ''
+              }`
+            : `${formatDisplayDate(memory.localDate)}, ${memory.promptSnapshot.question}: ${memory.reviewedTranscript}`
       }
       style={[styles.memoryCard, { backgroundColor: theme.surface, borderColor: theme.border }]}
     >
@@ -31,7 +41,7 @@ function MemoryRow({
         <Text style={[styles.memoryDate, { color: theme.primary }]}>
           {formatDisplayDate(memory.localDate)}
         </Text>
-        {memory.media ? (
+        {memory.media && !unavailable ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={playing ? 'Pause this memory' : 'Play this memory'}
@@ -49,13 +59,35 @@ function MemoryRow({
       <Text style={[styles.memoryQuestion, { color: theme.muted }]}>
         {memory.promptSnapshot.question}
       </Text>
-      {memory.media && memory.reviewedTranscript.length === 0 ? (
+      {unavailable ? (
+        <Text style={[styles.memoryText, { color: theme.text }]}>
+          This memory is unavailable. The voice recording is missing or damaged.
+        </Text>
+      ) : memory.media && memory.reviewedTranscript.length === 0 ? (
         <Text style={[styles.memoryText, { color: theme.text }]}>Voice memory</Text>
       ) : (
         <Text style={[styles.memoryText, { color: theme.text }]}>
           “{memory.reviewedTranscript}”
         </Text>
       )}
+      {unavailable ? (
+        <View style={styles.deleteAction}>
+          {confirmingDelete ? (
+            <ActionButton
+              label="Remove permanently"
+              onPress={onHardDelete}
+              theme={theme}
+            />
+          ) : (
+            <ActionButton
+              label="Remove this memory"
+              variant="secondary"
+              onPress={() => setConfirmingDelete(true)}
+              theme={theme}
+            />
+          )}
+        </View>
+      ) : null}
     </View>
   )
 }
@@ -64,7 +96,9 @@ export function TimelineScreen({
   memories,
   childNickname,
   playingId,
+  unavailable,
   onTogglePlay,
+  onHardDelete,
   onBack,
   onAnswerTonight,
   onRetry,
@@ -74,7 +108,9 @@ export function TimelineScreen({
   memories: MemoryEntryV1[]
   childNickname: string
   playingId: string | null
+  unavailable: Record<string, UnavailableReason>
   onTogglePlay: (memory: MemoryEntryV1) => void
+  onHardDelete: (memory: MemoryEntryV1) => void
   onBack: () => void
   onAnswerTonight: () => void
   onRetry: () => void
@@ -141,7 +177,9 @@ export function TimelineScreen({
                   key={memory.id}
                   memory={memory}
                   playing={playingId === memory.id}
+                  unavailableReason={unavailable[memory.id]}
                   onTogglePlay={() => onTogglePlay(memory)}
+                  onHardDelete={() => onHardDelete(memory)}
                   theme={theme}
                 />
               ))}
@@ -188,4 +226,5 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 20, fontWeight: '700' },
   emptyBody: { fontSize: 15, lineHeight: 22, marginTop: 8 },
   emptyAction: { marginTop: 20 },
+  deleteAction: { marginTop: 16 },
 })

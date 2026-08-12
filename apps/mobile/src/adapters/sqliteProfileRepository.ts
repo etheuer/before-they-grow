@@ -1,7 +1,11 @@
 import type { AgeBand } from '@before-they-grow/domain'
 import {
   StorageGateError,
+  classifyLayoutVersions,
+  classifyStorageInventory,
   type ProfileRepositoryPort,
+  type StorageInventoryPort,
+  type UnavailableMemory,
 } from '@before-they-grow/application'
 import type { NativeProfileV1 } from '@before-they-grow/contracts'
 import type { BackupExclusionPort } from './backupExclusion'
@@ -12,6 +16,7 @@ import {
   PROFILES_TABLE,
   SAVE_OPERATIONS_TABLE,
 } from './sqliteSchema'
+import { storageLayoutVersion } from './storageRoot'
 
 /**
  * Narrows the expo-sqlite surface to exactly what the profile catalog needs,
@@ -48,6 +53,19 @@ export type SqliteProfileRepositoryOptions = {
   exclusion: BackupExclusionPort
   userVersion: number
   expectedDatabaseFileName: string
+  inventory?: StorageInventoryPort
+  supportedLayoutVersion?: number
+}
+
+export type BootstrappingProfileRepository = ProfileRepositoryPort & {
+  consumeUnavailable(): UnavailableMemory[]
+}
+
+type MediaCatalogRow = {
+  id: string
+  media_ref: string | null
+  media_byte_count: number | null
+  media_sha256: string | null
 }
 
 type ProfileRow = {
@@ -67,14 +85,43 @@ type ProfileRow = {
  */
 export function createSqliteProfileRepository(
   options: SqliteProfileRepositoryOptions,
-): ProfileRepositoryPort {
-  const { client, exclusion, userVersion, expectedDatabaseFileName } = options
+): BootstrappingProfileRepository {
+  const {
+    client,
+    exclusion,
+    userVersion,
+    expectedDatabaseFileName,
+    inventory,
+    supportedLayoutVersion = storageLayoutVersion,
+  } = options
   let opened = false
   let closed = false
+  let unavailable: UnavailableMemory[] = []
+
+  async function verifyRoots() {
+    if (!inventory) return
+    await inventory.verifyRoots()
+    const versions = await inventory.listLayoutVersions()
+    if (classifyLayoutVersions(versions, supportedLayoutVersion) === 'version-unsafe') {
+      throw new StorageGateError('version-unsafe')
+    }
+  }
 
   async function verifyIntegrity() {
     const integrity = await client.integrityCheck()
     if (integrity !== 'ok') throw new StorageGateError('integrity-failed')
+  }
+
+  async function applySchemaInTransaction(execSql: string) {
+    try {
+      await client.transaction(async (txn) => {
+        await txn.exec(execSql)
+        await txn.exec(`PRAGMA user_version = ${userVersion}`)
+      })
+    } catch (error) {
+      if (error instanceof StorageGateError) throw error
+      throw new StorageGateError('version-unsafe')
+    }
   }
 
   async function verifyVersions() {
@@ -87,24 +134,15 @@ export function createSqliteProfileRepository(
     }
     const actualUserVersion = await client.getUserVersion()
     if (actualUserVersion === 0) {
-      await client.transaction(async (txn) => {
-        await txn.exec(DATABASE_DDL_V2)
-      })
-      await client.setUserVersion(userVersion)
+      await applySchemaInTransaction(DATABASE_DDL_V2)
     } else if (actualUserVersion === 1) {
       // Forward migration to v2: a v1 catalog that already has the memories
       // table is rebuilt in place (its CHECK constraints are relaxed for the
       // voice kind and media metadata); a v1 catalog without it simply gains
-      // the v2 table. The profile catalog is never touched.
+      // the v2 table. The profile catalog is never touched. user_version
+      // advances in the same transaction so a mid-migration failure rolls back.
       const hasMemories = await client.tableExists(MEMORIES_TABLE)
-      await client.transaction(async (txn) => {
-        if (hasMemories) {
-          await txn.exec(MIGRATION_MEMORIES_V1_TO_V2)
-        } else {
-          await txn.exec(DATABASE_DDL_V2)
-        }
-      })
-      await client.setUserVersion(userVersion)
+      await applySchemaInTransaction(hasMemories ? MIGRATION_MEMORIES_V1_TO_V2 : DATABASE_DDL_V2)
     } else {
       if (actualUserVersion !== userVersion) {
         throw new StorageGateError('version-unsafe')
@@ -118,9 +156,7 @@ export function createSqliteProfileRepository(
       if (!hasMemories || !hasSaveOperations) {
         // Additive, idempotent repair for a versioned catalog that somehow
         // lost a reliability table; nothing existing is touched.
-        await client.transaction(async (txn) => {
-          await txn.exec(DATABASE_DDL_V2)
-        })
+        await applySchemaInTransaction(DATABASE_DDL_V2)
       }
     }
     const profilesTable = await client.tableExists(PROFILES_TABLE)
@@ -131,11 +167,58 @@ export function createSqliteProfileRepository(
     }
   }
 
-  async function applyExclusions() {
+  async function verifyBackupControls() {
     for (const path of client.existingDatabasePaths()) {
       const excluded = await exclusion.apply(path)
       if (!excluded) throw new StorageGateError('backup-control-failed')
     }
+    if (inventory) await inventory.applyBackupControls()
+  }
+
+  async function verifyLayoutInventory() {
+    if (!inventory) return
+    const versions = await inventory.listLayoutVersions()
+    if (classifyLayoutVersions(versions, supportedLayoutVersion) === 'version-unsafe') {
+      throw new StorageGateError('version-unsafe')
+    }
+    const entries = await inventory.inspectInventory()
+    if (entries.some((entry) => entry.kind === 'unknown')) {
+      throw new StorageGateError('root-unsafe')
+    }
+  }
+
+  async function reconcileCatalog() {
+    if (!inventory) return
+    const rows = await client.getAll<MediaCatalogRow>(
+      `SELECT id, media_ref, media_byte_count, media_sha256
+       FROM ${MEMORIES_TABLE}
+       WHERE media_ref IS NOT NULL`,
+    )
+    const referenced = rows.flatMap((row) =>
+      row.media_ref
+        ? [{
+            memoryId: row.id,
+            relativePath: row.media_ref,
+            byteCount: row.media_byte_count ?? 0,
+            sha256: row.media_sha256 ?? '',
+          }]
+        : [],
+    )
+    const presence = await inventory.listReferenced(referenced.map((item) => item.relativePath))
+    const inventoryEntries = await inventory.inspectInventory()
+    const report = classifyStorageInventory({
+      referenced,
+      presence,
+      inventory: inventoryEntries,
+    })
+    if (report.kind === 'blocked') throw new StorageGateError(report.reason)
+    await inventory.cleanRecognizedStale()
+    await inventory.reconcileUnreferenced(referenced.map((item) => item.relativePath))
+    unavailable = report.unavailable
+  }
+
+  async function applyExclusions() {
+    await verifyBackupControls()
   }
 
   async function closeClient() {
@@ -154,14 +237,23 @@ export function createSqliteProfileRepository(
       opened = true
       closed = false
       try {
+        await verifyRoots()
         await client.open()
         await verifyIntegrity()
         await verifyVersions()
-        await applyExclusions()
+        await verifyBackupControls()
+        await verifyLayoutInventory()
+        await reconcileCatalog()
       } catch (error) {
         await closeClient()
         throw error
       }
+    },
+
+    consumeUnavailable() {
+      const current = unavailable
+      unavailable = []
+      return current
     },
 
     async close() {

@@ -53,6 +53,14 @@ function repository(): MemoryRepositoryPort & { memories: MemoryEntryV1[]; creat
     async findNewestFirst() {
       return [...state.memories]
     },
+    async findAllWithMedia() {
+      return state.memories.filter((entry) => entry.media !== null)
+    },
+    async remove(id) {
+      const before = state.memories.length
+      state.memories = state.memories.filter((entry) => entry.id !== id)
+      return state.memories.length === before ? 'missing' : 'removed'
+    },
   }
   return state
 }

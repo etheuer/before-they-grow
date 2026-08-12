@@ -33,6 +33,10 @@ export type MemoryRepositoryPort = {
   saveJournal?: SaveJournalPort
   /** Returns memories ordered newest first by save time. */
   findNewestFirst(): Promise<MemoryEntryV1[]>
+  /** Memories that carry a media reference, for catalog/filesystem cross-check. */
+  findAllWithMedia(): Promise<MemoryEntryV1[]>
+  /** Irreversible catalog removal of one memory identity. */
+  remove(id: string): Promise<'removed' | 'missing'>
 }
 
 export type SaveManualMemoryInput = {

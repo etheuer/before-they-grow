@@ -89,6 +89,11 @@ function fakeClient() {
         }
         return operations.map((operation) => ({ ...operation })) as unknown as T[]
       }
+      if (sql.includes('FROM memories') && sql.includes('WHERE media_ref IS NOT NULL')) {
+        return state.memories
+          .filter((memory) => memory.media_ref !== null)
+          .map((memory) => ({ ...memory })) as unknown as T[]
+      }
       if (sql.includes('FROM memories') && sql.includes('ORDER BY saved_at DESC')) {
         return [...state.memories]
           .sort((a, b) => b.saved_at.localeCompare(a.saved_at))
@@ -148,6 +153,11 @@ function fakeClient() {
           if (sql.includes(`DELETE FROM ${SAVE_OPERATIONS_TABLE}`)) {
             const operationId = params[0]
             state.operations = state.operations.filter((entry) => entry.operation_id !== operationId)
+            return
+          }
+          if (sql.includes('DELETE FROM memories')) {
+            const memoryId = String(params[0])
+            state.memories = state.memories.filter((entry) => entry.id !== memoryId)
             return
           }
           if (sql.includes('UPDATE memories')) {
@@ -432,6 +442,28 @@ describe('createSqliteMemoryRepository', () => {
     await expect(repo.findNewestFirst()).rejects.toEqual(
       new StorageGateError('integrity-failed'),
     )
+  })
+
+  it('lists only memories that carry a media reference', async () => {
+    const { client } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    await repo.create(memory)
+    await repo.create(voiceMemory)
+
+    expect(await repo.findAllWithMedia()).toEqual([voiceMemory])
+  })
+
+  it('hard-deletes a catalog row by identity and reports missing afterward', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    await repo.create(memory)
+    await repo.create(voiceMemory)
+
+    expect(await repo.remove(voiceMemory.id)).toBe('removed')
+    expect(state.memories.map((row) => row.id)).toEqual([memory.id])
+    expect(await repo.remove(voiceMemory.id)).toBe('missing')
   })
 
   it('the shared DDL creates both catalog tables idempotently via exec', async () => {

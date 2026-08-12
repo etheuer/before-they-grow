@@ -29,6 +29,14 @@ function fakeMemoryRepository(): MemoryRepositoryPort & { memories: MemoryEntryV
     async findNewestFirst() {
       return [...repo.memories].sort((a, b) => b.savedAt.localeCompare(a.savedAt))
     },
+    async findAllWithMedia() {
+      return repo.memories.filter((entry) => entry.media !== null)
+    },
+    async remove(id) {
+      const before = repo.memories.length
+      repo.memories = repo.memories.filter((entry) => entry.id !== id)
+      return repo.memories.length === before ? 'missing' : 'removed'
+    },
   }
   return repo
 }

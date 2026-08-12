@@ -10,6 +10,7 @@ import type {
   CreateProfileResult,
   ProtectedHomeState,
   TranscriptionOutcome,
+  UnavailableMemory,
   ValidateCapturedAudioResult,
   ValidatedAudio,
 } from '@before-they-grow/application'
@@ -66,12 +67,15 @@ function fakeProtectedArea(options: {
   saveVoiceResult?: 'saved' | 'not-saved' | 'indeterminate' | 'conflict'
   transcription?: TranscriptionOutcome | 'deferred'
   initialUnsaved?: { audio: ValidatedAudio; reviewedText: string }
+  unavailable?: UnavailableMemory[]
+  playOutcome?: 'played' | 'unavailable'
 } = {}): ProtectedAreaServices & {
   creates: CreateProfileInput[]
   bootstrapCalls: number
   savedManual: Array<{ transcript: string; recordingWasAvailable: boolean }>
   savedVoice: Array<{ reviewedTranscript: string; validatedMediaUri: string }>
   played: string[]
+  hardDeletes: string[]
   resolveTranscription: ((outcome: TranscriptionOutcome) => void) | null
 } {
   const state = {
@@ -81,6 +85,7 @@ function fakeProtectedArea(options: {
     savedManual: [] as Array<{ transcript: string; recordingWasAvailable: boolean }>,
     savedVoice: [] as Array<{ reviewedTranscript: string; validatedMediaUri: string }>,
     played: [] as string[],
+    hardDeletes: [] as string[],
     memories: [...(options.memories ?? [])],
     timelineLoads: 0,
     transcribeResolvers: [] as Array<(outcome: TranscriptionOutcome) => void>,
@@ -92,12 +97,16 @@ function fakeProtectedArea(options: {
     savedManual: Array<{ transcript: string; recordingWasAvailable: boolean }>
     savedVoice: Array<{ reviewedTranscript: string; validatedMediaUri: string }>
     played: string[]
+    hardDeletes: string[]
     resolveTranscription: ((outcome: TranscriptionOutcome) => void) | null
   } = {
     creates: state.creates,
     savedManual: state.savedManual,
     savedVoice: state.savedVoice,
     played: state.played,
+    get hardDeletes() {
+      return state.hardDeletes
+    },
     get bootstrapCalls() {
       return state.bootstrapCalls
     },
@@ -113,9 +122,12 @@ function fakeProtectedArea(options: {
         throw new Error('unexpected bootstrap failure')
       }
       if (state.creates.length > 0 && options.homeAfterCreate) {
-        return options.homeAfterCreate
+        return { ...options.homeAfterCreate, unavailable: options.unavailable ?? [] }
       }
-      return options.initial ?? { kind: 'needs-onboarding' }
+      return {
+        ...(options.initial ?? { kind: 'needs-onboarding' }),
+        unavailable: options.unavailable ?? [],
+      }
     },
     async createProfile(input) {
       state.creates.push(input)
@@ -154,6 +166,12 @@ function fakeProtectedArea(options: {
       }
       state.memories = [memory, ...state.memories]
       return { kind: 'saved', memory }
+    },
+    async hardDeleteMemory(id) {
+      state.hardDeletes.push(id)
+      const before = state.memories.length
+      state.memories = state.memories.filter((entry) => entry.id !== id)
+      return state.memories.length === before ? 'missing' : 'deleted'
     },
     async loadMemoryTimeline() {
       if ((options.timelineFailures ?? 0) > state.timelineLoads) {
@@ -240,7 +258,9 @@ function fakeProtectedArea(options: {
       return { kind: 'saved', memory }
     },
     async playMemory(relativePath) {
+      if (options.playOutcome === 'unavailable') return 'unavailable'
       state.played.push(relativePath)
+      return 'played'
     },
     async playUri(uri) {
       state.played.push(uri)
@@ -826,6 +846,58 @@ describe('protected area', () => {
     expect(await screen.findByText('Capture the answer')).toBeOnTheScreen()
     expect(screen.queryByText('Review the answer')).toBeNull()
     expect(area.savedVoice).toHaveLength(0)
+  })
+
+  it('shows a missing referenced voice file as an Unavailable memory with a hard-delete choice', async () => {
+    const damaged = {
+      ...memoryEntry('v-missing', '2026-08-11', 'I made my bed.'),
+      kind: 'voice' as const,
+      media: { relativePath: 'media/v-missing.m4a', byteCount: 1000, sha256: 'abc' },
+    }
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      memories: [damaged],
+      unavailable: [{ memoryId: 'v-missing', reason: 'missing-file' }],
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'View 1 memory' }))
+    expect(await screen.findByText(/This memory is unavailable/)).toBeOnTheScreen()
+    expect(screen.getByText('August 11, 2026')).toBeOnTheScreen()
+    expect(screen.getByText('What happened today that made you feel proud?')).toBeOnTheScreen()
+    expect(screen.queryByRole('button', { name: 'Play this memory' })).toBeNull()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Remove this memory' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Remove permanently' }))
+
+    expect(await screen.findByText('No memories yet')).toBeOnTheScreen()
+    expect(area.hardDeletes).toEqual(['v-missing'])
+  })
+
+  it('turns checksum damage discovered at playback into an Unavailable memory without hiding it', async () => {
+    const voice = {
+      ...memoryEntry('v1', '2026-08-11', ''),
+      kind: 'voice' as const,
+      reviewedTranscript: '',
+      media: { relativePath: 'media/v1.m4a', byteCount: 1000, sha256: 'abc' },
+    }
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      memories: [voice],
+      playOutcome: 'unavailable',
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'View 1 memory' }))
+    expect(await screen.findByText('Voice memory')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Play this memory' }))
+
+    expect(await screen.findByText(/This memory is unavailable/)).toBeOnTheScreen()
+    expect(screen.queryByRole('button', { name: 'Play this memory' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Remove this memory' })).toBeOnTheScreen()
+    expect(area.played).toEqual([])
   })
 
   it('shows an unexpected bootstrap failure as a blocked state and recovers on retry', async () => {

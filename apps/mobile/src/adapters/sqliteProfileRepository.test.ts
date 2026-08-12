@@ -1,6 +1,9 @@
 import {
   StorageGateError,
+  type FilesystemEntry,
+  type MediaPresence,
   type ProfileRepositoryPort,
+  type StorageInventoryPort,
 } from '@before-they-grow/application'
 import type { NativeProfileV1 } from '@before-they-grow/contracts'
 import { createSqliteProfileRepository, type SqliteClientPort, type SqliteTransactionPort } from './sqliteProfileRepository'
@@ -25,14 +28,42 @@ type FakeOptions = {
   mainDatabasePath?: string
 }
 
+type MediaRow = {
+  id: string
+  media_ref: string | null
+  media_byte_count: number | null
+  media_sha256: string | null
+}
+
+function applyExec(state: { userVersion: number; tables: Set<string> }, sql: string) {
+  const pragma = /PRAGMA user_version\s*=\s*(\d+)/i.exec(sql)
+  if (pragma) {
+    state.userVersion = Number(pragma[1])
+    return
+  }
+  if (sql.includes('memories_v2')) {
+    state.tables.add(MEMORIES_TABLE)
+    state.tables.add(SAVE_OPERATIONS_TABLE)
+    return
+  }
+  if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL exec: ${sql}`)
+  for (const statement of DATABASE_DDL_V2.split(';')) {
+    if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
+    if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
+    if (statement.includes(SAVE_OPERATIONS_TABLE)) state.tables.add(SAVE_OPERATIONS_TABLE)
+  }
+}
+
 function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
   state: {
     userVersion: number
     opened: boolean
     closed: boolean
     rows: Row[]
+    mediaRows: MediaRow[]
     integrity: 'ok' | 'failed'
     tables: Set<string>
+    migrationFailure: Error | null
   }
 } {
   const mainPath =
@@ -43,7 +74,9 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
     opened: initial.opened ?? false,
     closed: false,
     rows: [] as Row[],
+    mediaRows: [] as MediaRow[],
     tables: new Set<string>(),
+    migrationFailure: null as Error | null,
   }
   const client = {
     state,
@@ -74,18 +107,7 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
       }
     },
     async exec(sql: string) {
-      if (sql.includes('memories_v2')) {
-        // A v1→v2 migration rebuilds the memories table in place.
-        state.tables.add(MEMORIES_TABLE)
-        state.tables.add(SAVE_OPERATIONS_TABLE)
-        return
-      }
-      if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL exec: ${sql}`)
-      for (const statement of DATABASE_DDL_V2.split(';')) {
-        if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
-        if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
-        if (statement.includes(SAVE_OPERATIONS_TABLE)) state.tables.add(SAVE_OPERATIONS_TABLE)
-      }
+      applyExec(state, sql)
     },
     async getAll<T>(sql: string, _params?: readonly unknown[]) {
       if (sql.includes('COUNT(*)')) {
@@ -94,22 +116,19 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
       if (sql.includes('FROM profiles')) {
         return state.rows as unknown as T[]
       }
+      if (sql.includes('FROM memories') && sql.includes('media_ref')) {
+        return state.mediaRows.filter((row) => row.media_ref !== null) as unknown as T[]
+      }
       throw new Error(`Unexpected query: ${sql}`)
     },
     async transaction<T>(block: (txn: SqliteTransactionPort) => Promise<T>) {
+      const versionBefore = state.userVersion
+      const tablesBefore = new Set(state.tables)
+      const rowsBefore = state.rows.map((row) => ({ ...row }))
+      const mediaBefore = state.mediaRows.map((row) => ({ ...row }))
       const txn: SqliteTransactionPort = {
         async exec(sql: string) {
-          if (sql.includes('memories_v2')) {
-            state.tables.add(MEMORIES_TABLE)
-            state.tables.add(SAVE_OPERATIONS_TABLE)
-            return
-          }
-          if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL exec: ${sql}`)
-          for (const statement of DATABASE_DDL_V2.split(';')) {
-            if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
-            if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
-            if (statement.includes(SAVE_OPERATIONS_TABLE)) state.tables.add(SAVE_OPERATIONS_TABLE)
-          }
+          applyExec(state, sql)
         },
         async run(sql: string, params: readonly unknown[] = []) {
           if (sql.includes('CREATE TABLE')) {
@@ -133,7 +152,21 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
           throw new Error(`Unexpected txn query: ${sql}`)
         },
       }
-      return block(txn)
+      try {
+        const result = await block(txn)
+        if (state.migrationFailure) {
+          const failure = state.migrationFailure
+          state.migrationFailure = null
+          throw failure
+        }
+        return result
+      } catch (error) {
+        state.userVersion = versionBefore
+        state.tables = tablesBefore
+        state.rows = rowsBefore
+        state.mediaRows = mediaBefore
+        throw error
+      }
     },
     // Mirrors the real edge: the main catalog plus transient WAL/SHM
     // siblings are always candidates for per-resource backup exclusion.
@@ -165,12 +198,71 @@ function fakeExclusion(): FakeExclusion {
   return exclusion
 }
 
-function repository(client: SqliteClientPort, exclusion: BackupExclusionPort): ProfileRepositoryPort {
+function fakeInventory(): StorageInventoryPort & {
+  rootsChecked: boolean
+  cleaned: string[]
+  unreferenced: string[][]
+  backupApplied: number
+  entries: FilesystemEntry[]
+  presence: MediaPresence[]
+  versions: number[]
+  rootError: Error | null
+} {
+  const inventory: StorageInventoryPort & {
+    rootsChecked: boolean
+    cleaned: string[]
+    unreferenced: string[][]
+    backupApplied: number
+    entries: FilesystemEntry[]
+    presence: MediaPresence[]
+    versions: number[]
+    rootError: Error | null
+  } = {
+    rootsChecked: false,
+    cleaned: [],
+    unreferenced: [],
+    backupApplied: 0,
+    entries: [],
+    presence: [],
+    versions: [1],
+    rootError: null,
+    async verifyRoots() {
+      inventory.rootsChecked = true
+      if (inventory.rootError) throw inventory.rootError
+    },
+    async listLayoutVersions() {
+      return [...inventory.versions]
+    },
+    async inspectInventory() {
+      return [...inventory.entries]
+    },
+    async listReferenced() {
+      return [...inventory.presence]
+    },
+    async reconcileUnreferenced(referenced) {
+      inventory.unreferenced.push([...referenced])
+    },
+    async cleanRecognizedStale() {
+      inventory.cleaned.push('stale')
+    },
+    async applyBackupControls() {
+      inventory.backupApplied += 1
+    },
+  }
+  return inventory
+}
+
+function repository(
+  client: SqliteClientPort,
+  exclusion: BackupExclusionPort,
+  inventory?: StorageInventoryPort,
+): ProfileRepositoryPort {
   return createSqliteProfileRepository({
     client,
     exclusion,
     userVersion: USER_VERSION,
     expectedDatabaseFileName: DATABASE_NAME,
+    inventory,
   })
 }
 
@@ -355,5 +447,150 @@ describe('createSqliteProfileRepository', () => {
 
     await expect(repo.findOnly()).rejects.toEqual(new StorageGateError('integrity-failed'))
     await expect(repo.create(profile)).rejects.toEqual(new StorageGateError('integrity-failed'))
+  })
+
+  it('rolls back a failed forward migration and leaves the existing catalog untouched', async () => {
+    const client = fakeClient({ userVersion: 1 })
+    client.state.tables.add('profiles')
+    client.state.tables.add('memories')
+    client.state.migrationFailure = new Error('disk full during migration')
+    const repo = repository(client, fakeExclusion())
+
+    await expect(repo.open()).rejects.toEqual(new StorageGateError('version-unsafe'))
+    expect(client.state.userVersion).toBe(1)
+    expect(client.state.tables.has('profiles')).toBe(true)
+    expect(client.state.closed).toBe(true)
+  })
+
+  it('refuses a newer user version without writing schema or advancing the version', async () => {
+    const client = fakeClient({ userVersion: USER_VERSION + 3 })
+    const exclusion = fakeExclusion()
+    const repo = repository(client, exclusion)
+
+    await expect(repo.open()).rejects.toEqual(new StorageGateError('version-unsafe'))
+    expect(client.state.userVersion).toBe(USER_VERSION + 3)
+    expect(client.state.tables.size).toBe(0)
+    expect(exclusion.applied).toEqual([])
+  })
+
+  it('does not clean stale files when integrity fails', async () => {
+    const client = fakeClient({ integrity: 'failed' })
+    const inventory = fakeInventory()
+    inventory.entries = [
+      { relativePath: 'media/.stale-cache.m4a', byteCount: 8, kind: 'recognized-stale' },
+    ]
+    const repo = repository(client, fakeExclusion(), inventory)
+
+    await expect(repo.open()).rejects.toEqual(new StorageGateError('integrity-failed'))
+    expect(inventory.cleaned).toEqual([])
+    expect(inventory.unreferenced).toEqual([])
+  })
+
+  it('blocks an unknown file and never deletes it', async () => {
+    const client = fakeClient({ userVersion: USER_VERSION })
+    client.state.tables.add('profiles')
+    client.state.tables.add('memories')
+    client.state.tables.add('save_operations')
+    const inventory = fakeInventory()
+    inventory.entries = [
+      { relativePath: 'media/notes.txt', byteCount: 12, kind: 'unknown' },
+    ]
+    const repo = repository(client, fakeExclusion(), inventory)
+
+    await expect(repo.open()).rejects.toEqual(new StorageGateError('root-unsafe'))
+    expect(inventory.cleaned).toEqual([])
+    expect(inventory.unreferenced).toEqual([])
+  })
+
+  it('keeps a missing referenced file as an Unavailable memory and then cleans recognized stale files', async () => {
+    const client = fakeClient({ userVersion: USER_VERSION })
+    client.state.tables.add('profiles')
+    client.state.tables.add('memories')
+    client.state.tables.add('save_operations')
+    client.state.mediaRows.push({
+      id: 'memory-voice-1',
+      media_ref: 'media/memory-voice-1.m4a',
+      media_byte_count: 1000,
+      media_sha256: 'deadbeef',
+    })
+    const inventory = fakeInventory()
+    inventory.presence = [
+      { relativePath: 'media/memory-voice-1.m4a', exists: false, byteCount: 0 },
+    ]
+    inventory.entries = [
+      { relativePath: 'media/.stale-cache.m4a', byteCount: 8, kind: 'recognized-stale' },
+      { relativePath: 'media/orphan.m4a', byteCount: 40, kind: 'recognized-final' },
+    ]
+    const repo = createSqliteProfileRepository({
+      client,
+      exclusion: fakeExclusion(),
+      userVersion: USER_VERSION,
+      expectedDatabaseFileName: DATABASE_NAME,
+      inventory,
+    })
+
+    await repo.open()
+
+    expect(repo.consumeUnavailable()).toEqual([
+      { memoryId: 'memory-voice-1', reason: 'missing-file' },
+    ])
+    expect(inventory.cleaned).toEqual(['stale'])
+    expect(inventory.unreferenced).toEqual([['media/memory-voice-1.m4a']])
+  })
+
+  it('reports a wrong-size referenced file as unavailable and does not recreate the catalog', async () => {
+    const client = fakeClient({ userVersion: USER_VERSION })
+    client.state.tables.add('profiles')
+    client.state.tables.add('memories')
+    client.state.tables.add('save_operations')
+    client.state.mediaRows.push({
+      id: 'memory-voice-1',
+      media_ref: 'media/memory-voice-1.m4a',
+      media_byte_count: 1000,
+      media_sha256: 'deadbeef',
+    })
+    const inventory = fakeInventory()
+    inventory.presence = [
+      { relativePath: 'media/memory-voice-1.m4a', exists: true, byteCount: 4 },
+    ]
+    inventory.entries = [
+      { relativePath: 'media/memory-voice-1.m4a', byteCount: 4, kind: 'recognized-final' },
+    ]
+    const repo = createSqliteProfileRepository({
+      client,
+      exclusion: fakeExclusion(),
+      userVersion: USER_VERSION,
+      expectedDatabaseFileName: DATABASE_NAME,
+      inventory,
+    })
+
+    await repo.open()
+
+    expect(repo.consumeUnavailable()).toEqual([
+      { memoryId: 'memory-voice-1', reason: 'wrong-size' },
+    ])
+    expect(client.state.userVersion).toBe(USER_VERSION)
+  })
+
+  it('blocks a future layout version discovered on disk before cleanup', async () => {
+    const client = fakeClient({ userVersion: USER_VERSION })
+    client.state.tables.add('profiles')
+    const inventory = fakeInventory()
+    inventory.versions = [1, 2]
+    const repo = repository(client, fakeExclusion(), inventory)
+
+    await expect(repo.open()).rejects.toEqual(new StorageGateError('version-unsafe'))
+    expect(inventory.cleaned).toEqual([])
+  })
+
+  it('checks canonical roots before opening the catalog', async () => {
+    const client = fakeClient({ userVersion: USER_VERSION })
+    const inventory = fakeInventory()
+    inventory.rootError = new StorageGateError('root-unsafe')
+    const repo = repository(client, fakeExclusion(), inventory)
+
+    await expect(repo.open()).rejects.toEqual(new StorageGateError('root-unsafe'))
+    expect(client.state.opened).toBe(false)
+    expect(inventory.rootsChecked).toBe(true)
   })
 })
