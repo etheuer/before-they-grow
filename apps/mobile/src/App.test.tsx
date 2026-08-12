@@ -653,7 +653,7 @@ describe('protected area', () => {
     expect(screen.getByRole('button', { name: 'Play this memory' })).toBeOnTheScreen()
   })
 
-  it('does not show a confirmation when a voice save is duplicative (indeterminate)', async () => {
+  it('does not show a confirmation when a voice save could not complete', async () => {
     const area = fakeProtectedArea({
       initial: homeWithProfile,
       permission: 'granted',
