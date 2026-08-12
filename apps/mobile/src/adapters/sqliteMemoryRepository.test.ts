@@ -47,6 +47,12 @@ function fakeClient() {
       return state.tables.has(name)
     },
     async run() {},
+    async exec(_sql: string) {
+      for (const statement of DATABASE_DDL.split(';')) {
+        if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
+        if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
+      }
+    },
     async getAll<T>(sql: string, params: readonly unknown[] = []) {
       if (sql.includes('FROM memories') && sql.includes('ORDER BY saved_at DESC')) {
         return [...state.memories]
@@ -60,13 +66,15 @@ function fakeClient() {
     },
     async transaction<T>(block: (txn: SqliteTransactionPort) => Promise<T>) {
       const txn: SqliteTransactionPort = {
+        async exec() {
+          for (const statement of DATABASE_DDL.split(';')) {
+            if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
+            if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
+          }
+        },
         async run(sql: string, params: readonly unknown[] = []) {
           if (sql.includes('CREATE TABLE')) {
-            for (const statement of DATABASE_DDL.split(';')) {
-              if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
-              if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
-            }
-            return
+            throw new Error('DDL must go through exec, not run')
           }
           if (sql.includes('INSERT INTO memories')) {
             const [
@@ -179,16 +187,30 @@ describe('createSqliteMemoryRepository', () => {
     )
   })
 
-  it('the shared DDL creates both catalog tables idempotently', async () => {
+  it('the shared DDL creates both catalog tables idempotently via exec', async () => {
     const { client, state } = fakeClient()
     await client.open()
 
     await client.transaction(async (txn) => {
-      await txn.run(DATABASE_DDL)
-      await txn.run(DATABASE_DDL)
+      await txn.exec(DATABASE_DDL)
+      await txn.exec(DATABASE_DDL)
     })
 
     expect(state.tables.has(PROFILES_TABLE)).toBe(true)
     expect(state.tables.has(MEMORIES_TABLE)).toBe(true)
+  })
+
+  it('refuses to run multi-statement DDL through run (single-statement API)', async () => {
+    const { client } = fakeClient()
+    await client.open()
+
+    // Regression: runAsync compiles only the first statement, so DDL sent
+    // through run() would silently create just the profiles table and brick
+    // every fresh catalog. DDL must travel via exec().
+    await expect(
+      client.transaction(async (txn) => {
+        await txn.run(DATABASE_DDL)
+      }),
+    ).rejects.toThrow('DDL must go through exec, not run')
   })
 })

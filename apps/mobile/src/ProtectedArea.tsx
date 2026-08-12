@@ -133,7 +133,14 @@ function HomeShell({
   const [memories, setMemories] = useState<MemoryEntryV1[]>([])
 
   const refreshTimeline = () => {
-    void services.loadMemoryTimeline().then(setMemories)
+    void services
+      .loadMemoryTimeline()
+      .then(setMemories)
+      .catch(() => {
+        // A read failure must surface as blocked storage, never as a false
+        // empty timeline.
+        onStorageBlocked()
+      })
   }
 
   useEffect(() => {

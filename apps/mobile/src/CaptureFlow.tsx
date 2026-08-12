@@ -189,7 +189,11 @@ export function CaptureFlow({
   if (step === 'saved') {
     return (
       <View style={styles.section}>
-        <Text accessibilityRole="header" style={[styles.stepTitle, { color: theme.text }]}>
+        <Text
+          accessibilityRole="header"
+          accessibilityLiveRegion="polite"
+          style={[styles.stepTitle, { color: theme.text }]}
+        >
           Saved
         </Text>
         <Text style={[styles.stepBody, { color: theme.muted }]}>

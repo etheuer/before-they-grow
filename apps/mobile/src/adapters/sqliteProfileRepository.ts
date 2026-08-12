@@ -13,6 +13,8 @@ import { DATABASE_DDL, MEMORIES_TABLE, PROFILES_TABLE } from './sqliteSchema'
  * tests and against the real database in a custom development build.
  */
 export type SqliteTransactionPort = {
+  /** Executes one or more statements (multi-statement DDL). */
+  exec(sql: string): Promise<void>
   run(sql: string, params?: readonly unknown[]): Promise<void>
   getAll<T>(sql: string, params?: readonly unknown[]): Promise<T[]>
 }
@@ -25,6 +27,8 @@ export type SqliteClientPort = {
   setUserVersion(version: number): Promise<void>
   integrityCheck(): Promise<'ok' | 'failed'>
   tableExists(name: string): Promise<boolean>
+  /** Executes one or more statements (multi-statement DDL). */
+  exec(sql: string): Promise<void>
   run(sql: string, params?: readonly unknown[]): Promise<void>
   getAll<T>(sql: string, params?: readonly unknown[]): Promise<T[]>
   /** Runs a block inside one exclusive transaction. */
@@ -78,7 +82,7 @@ export function createSqliteProfileRepository(
     const actualUserVersion = await client.getUserVersion()
     if (actualUserVersion === 0) {
       await client.transaction(async (txn) => {
-        await txn.run(DATABASE_DDL)
+        await txn.exec(DATABASE_DDL)
       })
       await client.setUserVersion(userVersion)
     } else {
@@ -94,7 +98,7 @@ export function createSqliteProfileRepository(
         // Additive, idempotent upgrade: pre-memory v1 catalogs gain the
         // memories table only; nothing existing is touched.
         await client.transaction(async (txn) => {
-          await txn.run(DATABASE_DDL)
+          await txn.exec(DATABASE_DDL)
         })
       }
     }

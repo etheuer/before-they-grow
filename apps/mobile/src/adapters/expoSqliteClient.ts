@@ -60,6 +60,12 @@ export function createSqliteClientFromDatabase(database: DatabaseLike): SqliteCl
       )
       return row !== null
     },
+    async exec(sql: string) {
+      // execAsync maps to sqlite3_exec and compiles every statement in the
+      // source; multi-statement DDL must never go through runAsync, which
+      // prepares only the first statement.
+      await database.execAsync(sql)
+    },
     async run(sql: string, params: readonly unknown[] = []) {
       await database.runAsync(sql, params as SQLiteBindParams)
     },
@@ -73,6 +79,7 @@ export function createSqliteClientFromDatabase(database: DatabaseLike): SqliteCl
       let result: T | undefined
       await database.withExclusiveTransactionAsync(async (txn) => {
         const port: SqliteTransactionPort = {
+          exec: (sql: string) => txn.execAsync(sql).then(() => undefined),
           run: (sql: string, params: readonly unknown[] = []) =>
             txn.runAsync(sql, params as SQLiteBindParams).then(() => undefined),
           getAll: <R,>(sql: string, params: readonly unknown[] = []) =>
@@ -145,6 +152,9 @@ export function createExpoSqliteProfileClient(): SqliteClientPort {
     },
     async tableExists(name: string) {
       return requireInner().tableExists(name)
+    },
+    async exec(sql: string) {
+      await requireInner().exec(sql)
     },
     async run(sql: string, params: readonly unknown[] = []) {
       await requireInner().run(sql, params)

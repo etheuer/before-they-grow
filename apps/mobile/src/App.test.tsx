@@ -362,6 +362,8 @@ describe('protected area', () => {
       transcript: '  I made my bed all by myself.  ',
       recordingWasAvailable: false,
     })
+    // A completed save cannot be submitted twice from the same review state.
+    expect(screen.queryByRole('button', { name: 'Save transcript' })).toBeNull()
   })
 
   it('does not expose a text-only bypass when microphone capture is ready', async () => {

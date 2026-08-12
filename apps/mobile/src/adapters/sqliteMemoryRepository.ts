@@ -48,7 +48,7 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
     async create(memory) {
       if (!client.isOpen()) throw new StorageGateError('integrity-failed')
 
-      return client.transaction(async (txn) => {
+      const outcome = await client.transaction(async (txn) => {
         const existing = await txn.getAll<{ id: string }>(
           `SELECT id FROM ${MEMORIES_TABLE} WHERE id = ?`,
           [memory.id],
@@ -76,14 +76,21 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
             memory.media,
           ],
         )
+        return 'created' as const
+      })
 
-        const verified = await txn.getAll<{ id: string }>(
+      // A save is reported only after the committed row can be queried back.
+      // The read is deliberately outside the transaction so it observes the
+      // committed state, not the transaction's own uncommitted write.
+      if (outcome === 'created') {
+        const verified = await client.getAll<{ id: string }>(
           `SELECT id FROM ${MEMORIES_TABLE} WHERE id = ?`,
           [memory.id],
         )
         if (verified.length !== 1) throw new StorageGateError('integrity-failed')
-        return 'created' as const
-      })
+      }
+
+      return outcome
     },
 
     async findNewestFirst() {

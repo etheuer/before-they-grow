@@ -69,7 +69,12 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
       return state.tables.has(name)
     },
     async run(sql: string) {
-      if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL: ${sql}`)
+      if (sql.includes('CREATE TABLE')) {
+        throw new Error('DDL must go through exec, not run')
+      }
+    },
+    async exec(sql: string) {
+      if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL exec: ${sql}`)
       for (const statement of DATABASE_DDL.split(';')) {
         if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
         if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
@@ -86,13 +91,15 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
     },
     async transaction<T>(block: (txn: SqliteTransactionPort) => Promise<T>) {
       const txn: SqliteTransactionPort = {
+        async exec(_sql: string) {
+          for (const statement of DATABASE_DDL.split(';')) {
+            if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
+            if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
+          }
+        },
         async run(sql: string, params: readonly unknown[] = []) {
           if (sql.includes('CREATE TABLE')) {
-            for (const statement of DATABASE_DDL.split(';')) {
-              if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
-              if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
-            }
-            return
+            throw new Error('DDL must go through exec, not run')
           }
           if (sql.includes('INSERT INTO profiles')) {
             const [id, child_nickname, age_band, consented_at, created_at] = params
