@@ -1,3 +1,4 @@
+import { AppState } from 'react-native'
 import { AudioModule, IOSOutputFormat, AudioQuality } from 'expo-audio'
 import { MAX_CAPTURE_BYTES, MAX_CAPTURE_DURATION_MS, type AudioRecorderPort, type CapturedAudio, type RecorderStatus } from '@before-they-grow/application'
 import { createExpoRecordingPermissionPort } from './expoRecordingPermission'
@@ -7,7 +8,9 @@ import { createExpoRecordingPermissionPort } from './expoRecordingPermission'
  * the native voice policy. The operating system's selected input route
  * (built-in, wired, or Bluetooth) is accepted without a manual route picker.
  * Recording stops automatically at the five-minute duration and 32 MiB size
- * limits.
+ * limits, and stops covert capture (releasing the microphone) on any
+ * privacy-sensitive lifecycle transition: an incoming call, audio-focus loss,
+ * screen lock, or inactive/background transition.
  */
 const VOICE_RECORDING_OPTIONS = {
   directory: 'cache' as const,
@@ -33,17 +36,12 @@ const VOICE_RECORDING_OPTIONS = {
   web: {},
 }
 
-/**
- * expo-audio edge for the AudioRecorder port. Recordings land in the app
- * cache and are only moved into the canonical family root after validation.
- * Capture stops automatically at the five-minute policy limit; the 32 MiB
- * limit is enforced at finalization by the media inspector.
- */
 export function createExpoAudioRecorderPort(): AudioRecorderPort {
   const permission = createExpoRecordingPermissionPort()
   let recorder: InstanceType<typeof AudioModule.AudioRecorder> | null = null
   let poller: ReturnType<typeof setInterval> | null = null
   const listeners = new Set<() => void>()
+  const interruptedListeners = new Set<(captured: CapturedAudio) => void>()
 
   const emit = () => {
     for (const listener of listeners) listener()
@@ -55,6 +53,28 @@ export function createExpoAudioRecorderPort(): AudioRecorderPort {
       poller = null
     }
   }
+
+  const release = () => {
+    stopPoller()
+    const current = recorder
+    recorder = null
+    return current
+  }
+
+  const appStateSubscription = AppState.addEventListener('change', (state) => {
+    if (state === 'active' || !recorder) return
+    const current = release()
+    emit()
+    if (!current) return
+    void current.stop().then(() => {
+      const uri = current.uri
+      if (!uri) return
+      for (const listener of interruptedListeners) {
+        listener({ uri, durationMs: current.currentTime * 1000 })
+      }
+    })
+  })
+  void appStateSubscription
 
   return {
     async requestPermission() {
@@ -71,9 +91,7 @@ export function createExpoAudioRecorderPort(): AudioRecorderPort {
     },
 
     async stop() {
-      const current = recorder
-      stopPoller()
-      recorder = null
+      const current = release()
       if (!current) throw new Error('No active recording')
       try {
         await current.stop()
@@ -87,9 +105,8 @@ export function createExpoAudioRecorderPort(): AudioRecorderPort {
     },
 
     async cancel() {
-      stopPoller()
-      const current = recorder
-      recorder = null
+      const current = release()
+      emit()
       if (current) {
         try {
           await current.stop()
@@ -108,6 +125,11 @@ export function createExpoAudioRecorderPort(): AudioRecorderPort {
     subscribe(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
+    },
+
+    onInterrupted(listener) {
+      interruptedListeners.add(listener)
+      return () => interruptedListeners.delete(listener)
     },
   }
 }

@@ -45,6 +45,8 @@ export type AudioRecorderPort = {
   cancel(): Promise<void>
   getStatus(): RecorderStatus
   subscribe(listener: () => void): () => void
+  /** Registers a handler for a capture stopped by a lifecycle/audio interruption. */
+  onInterrupted(listener: (captured: CapturedAudio) => void): () => void
 }
 
 /**

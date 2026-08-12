@@ -142,6 +142,18 @@ function HomeShell({
     }
   }, [services])
 
+  // Pause playback on any privacy-sensitive lifecycle transition; it resumes
+  // only when the parent presses play again.
+  useEffect(() => {
+    const unsubscribe = services.subscribeLifecycle((state) => {
+      if (state !== 'active') {
+        void services.pausePlayback()
+        setPlayingId(null)
+      }
+    })
+    return unsubscribe
+  }, [services])
+
   const togglePlay = async (memory: MemoryEntryV1) => {
     if (!memory.media) return
     if (playingId === memory.id) {

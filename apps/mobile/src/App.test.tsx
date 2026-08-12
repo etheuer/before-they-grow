@@ -11,6 +11,7 @@ import type {
   ProtectedHomeState,
   TranscriptionOutcome,
   ValidateCapturedAudioResult,
+  ValidatedAudio,
 } from '@before-they-grow/application'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import type { ProtectedAreaServices } from './services'
@@ -61,8 +62,10 @@ function fakeProtectedArea(options: {
   bootstrapFailures?: number
   timelineFailures?: number
   captureResult?: ValidateCapturedAudioResult
+  captureSequence?: ValidateCapturedAudioResult[]
   saveVoiceResult?: 'saved' | 'duplicate' | 'save-failed'
   transcription?: TranscriptionOutcome | 'deferred'
+  initialUnsaved?: { audio: ValidatedAudio; reviewedText: string }
 } = {}): ProtectedAreaServices & {
   creates: CreateProfileInput[]
   bootstrapCalls: number
@@ -81,6 +84,7 @@ function fakeProtectedArea(options: {
     memories: [...(options.memories ?? [])],
     timelineLoads: 0,
     transcribeResolvers: [] as Array<(outcome: TranscriptionOutcome) => void>,
+    unsaved: (options.initialUnsaved ?? null) as { audio: ValidatedAudio; reviewedText: string } | null,
   }
   const api: ProtectedAreaServices & {
     creates: CreateProfileInput[]
@@ -176,8 +180,11 @@ function fakeProtectedArea(options: {
       return () => undefined
     },
     async validateCapturedAudio() {
+      const next = options.captureSequence?.shift()
       return (
-        options.captureResult ?? {
+        next
+        ?? options.captureResult
+        ?? {
           kind: 'valid',
           media: { uri: 'file:///cache/rec.m4a', durationMs: 12000, byteCount: 1000, sha256: 'abc' },
         }
@@ -229,6 +236,18 @@ function fakeProtectedArea(options: {
     },
     onPlaybackEnded() {
       return () => undefined
+    },
+    subscribeLifecycle() {
+      return () => undefined
+    },
+    getUnsavedRecording() {
+      return state.unsaved
+    },
+    putUnsavedRecording(recording) {
+      state.unsaved = recording
+    },
+    clearUnsavedRecording() {
+      state.unsaved = null
     },
   }
   return api
@@ -720,6 +739,53 @@ describe('protected area', () => {
     })
 
     expect(input.props.value).toBe('I typed this myself')
+  })
+
+  it('restores an in-process Unsaved recording for review after the App-lock transition', async () => {
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      initialUnsaved: {
+        audio: { uri: 'file:///cache/interrupted.m4a', durationMs: 9000, byteCount: 800, sha256: 'xyz' },
+        reviewedText: '',
+      },
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+
+    expect(await screen.findByText('Review the answer')).toBeOnTheScreen()
+    expect(screen.getByRole('button', { name: 'Play' })).toBeOnTheScreen()
+  })
+
+  it('keeps the prior reviewed answer when a replacement recording fails to validate', async () => {
+    const valid = {
+      kind: 'valid' as const,
+      media: { uri: 'file:///cache/rec.m4a', durationMs: 12000, byteCount: 1000, sha256: 'abc' },
+    }
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      permission: 'granted',
+      captureSequence: [valid, { kind: 'not-decodable' }],
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    // First capture is valid (fake default) -> review.
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+    expect(await screen.findByText('Review the answer')).toBeOnTheScreen()
+
+    // Replacement: this time validation fails (captureResult is fixed to
+    // not-decodable), so the prior answer must remain intact.
+    await fireEvent.press(screen.getByRole('button', { name: 'Record again' }))
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+
+    expect(screen.getByText('Review the answer')).toBeOnTheScreen()
+    expect(
+      await screen.findByText("The new recording couldn't be saved. Your previous answer is still here."),
+    ).toBeOnTheScreen()
+    expect(area.savedVoice).toHaveLength(0)
   })
 
   it('shows an unexpected bootstrap failure as a blocked state and recovers on retry', async () => {

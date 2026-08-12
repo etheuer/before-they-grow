@@ -24,7 +24,12 @@ import {
   type SaveVoiceMemoryInput,
   type SaveVoiceMemoryResult,
   type TranscriptionOutcome,
+  type UnsavedRecording,
   type ValidateCapturedAudioResult,
+} from '@before-they-grow/application'
+import {
+  createTransientCaptureStore,
+  publishInterruptedCapture,
 } from '@before-they-grow/application'
 import {
   profileDatabaseFileNameV1,
@@ -42,6 +47,8 @@ import { createExpoMediaInspectorPort } from './adapters/expoMediaInspector'
 import { createExpoMediaStorePort } from './adapters/expoMediaStore'
 import { createExpoTranscriberPort } from './adapters/expoTranscriber'
 import { createTranscriptionCoordinator } from '@before-they-grow/application'
+import { cleanStaleCaptureCache } from './adapters/expoCacheCleanup'
+import { createExpoLifecyclePort } from './adapters/expoLifecycle'
 
 export type ProtectedAreaServices = {
   /** Opens and verifies family storage, then returns the protected-area state. */
@@ -54,6 +61,12 @@ export type ProtectedAreaServices = {
   saveManualMemory(input: SaveManualMemoryInput): Promise<SaveManualMemoryResult>
   /** Loads saved Local-only memories newest first. */
   loadMemoryTimeline(): Promise<MemoryEntryV1[]>
+  // --- in-process Unsaved recording (survives the App-lock transition) ---
+  getUnsavedRecording(): UnsavedRecording | null
+  putUnsavedRecording(recording: UnsavedRecording): void
+  clearUnsavedRecording(): void
+  // --- lifecycle ---
+  subscribeLifecycle(listener: (state: 'active' | 'inactive' | 'background') => void): () => void
   // --- native voice path (#34) ---
   startRecording(): Promise<void>
   stopRecording(): Promise<CapturedAudio>
@@ -121,11 +134,35 @@ export function createProtectedAreaServices(
   const mediaStore: MediaStorePort = createExpoMediaStorePort(exclusion)
   const transcriberPort = createExpoTranscriberPort()
   const transcriber = createTranscriptionCoordinator({ transcriber: transcriberPort })
+  const unsaved = createTransientCaptureStore()
+  const appLifecycle = createExpoLifecyclePort()
+
+  // An interrupted-but-valid capture is retained as an in-process Unsaved
+  // recording for review after re-authentication, never persisted.
+  recorder.onInterrupted((captured) => {
+    void publishInterruptedCapture({ inspector, store: unsaved }, captured)
+  })
 
   return {
     async bootstrap(date = now()) {
+      // A process start removes stale capture-cache files and never offers
+      // them as recoverable drafts.
+      await cleanStaleCaptureCache()
       const { profile } = await getRepositorySet()
       return loadProtectedHomeState({ repository: profile }, date)
+    },
+
+    getUnsavedRecording() {
+      return unsaved.get()
+    },
+    putUnsavedRecording(recording) {
+      unsaved.put(recording)
+    },
+    clearUnsavedRecording() {
+      unsaved.clear()
+    },
+    subscribeLifecycle(listener) {
+      return appLifecycle.subscribe(listener)
     },
 
     async createProfile(input, date = now()) {

@@ -54,3 +54,10 @@ export {
   type TranscriptionCoordinator,
   type TranscriptionOutcome,
 } from './transcribe'
+export {
+  createTransientCaptureStore,
+  publishInterruptedCapture,
+  type InterruptedCaptureOutcome,
+  type TransientCaptureStore,
+  type UnsavedRecording,
+} from './unsaved'

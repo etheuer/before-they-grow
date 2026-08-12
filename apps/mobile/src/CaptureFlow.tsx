@@ -27,29 +27,36 @@ type CaptureStep =
   | 'saving'
   | 'saved'
 
+/** The reviewed candidate: a validated capture plus optional parent text. */
+type Candidate = {
+  uri: string
+  validated: ValidatedAudio
+  reviewText: string
+}
+
 export type CaptureFlowProps = {
   promptSnapshot: PromptSnapshotV1
   theme: Theme
   services: ProtectedAreaServices
   onSaved: () => void
-  /** Called when a storage gate is hit; the parent surfaces the blocked state. */
   onStorageBlocked: () => void
 }
 
 function formatClock(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000)
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
 /**
- * The production-shaped voice capture flow. Microphone permission is
- * requested only after the parent chooses to record and sees the purpose
- * explained at that decision point. When capture is unavailable the Manual
- * transcript path is exposed with an honest "no voice was captured" statement;
- * otherwise the flow records, finalizes, validates, reviews (playback +
- * optional parent text), and saves audio-only or audio-plus-text.
+ * The voice capture flow, hardened for interruptions and replacement attempts.
+ * A review candidate is only ever replaced by a fully validated new capture;
+ * an unvalidated retry, denial, or interruption leaves the prior reviewed
+ * answer intact. An interrupted-but-valid capture is retained as an in-process
+ * Unsaved recording in the transient store (survives the App-lock transition,
+ * never a persistence promise). Recording itself stops covert capture on any
+ * privacy-sensitive lifecycle transition.
  */
 export function CaptureFlow({
   promptSnapshot,
@@ -59,20 +66,31 @@ export function CaptureFlow({
   onStorageBlocked,
 }: CaptureFlowProps) {
   const [step, setStep] = useState<CaptureStep>('idle')
-  const [transcript, setTranscript] = useState('')
-  const [reviewText, setReviewText] = useState('')
+  const [transcript, setTranscript] = useState('') // manual-text fallback
   const [error, setError] = useState<string | null>(null)
+  const [retryNote, setRetryNote] = useState<string | null>(null)
+  const [candidate, setCandidate] = useState<Candidate | null>(null)
   const [elapsedMs, setElapsedMs] = useState(0)
-  const [validated, setValidated] = useState<ValidatedAudio | null>(null)
-  const [capturedUri, setCapturedUri] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const finalizeLock = useRef(false)
+  const lastStep = useRef(step)
 
-  // Stop any in-flight transcription when the flow unmounts so a late draft
+  // Restore an in-process Unsaved recording after the App-lock transition.
+  useEffect(() => {
+    const unsaved = services.getUnsavedRecording()
+    if (unsaved && !candidate && step === 'idle') {
+      setCandidate({ uri: unsaved.audio.uri, validated: unsaved.audio, reviewText: unsaved.reviewedText })
+      setStep('review')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [services])
+
+  // Stop any in-flight work when the flow unmounts so a late draft or capture
   // cannot arrive for a review the parent left.
   useEffect(() => {
     return () => {
+      void services.cancelRecording()
       void services.cancelTranscription()
     }
   }, [services])
@@ -81,9 +99,7 @@ export function CaptureFlow({
     setTranscribing(true)
     void services.startTranscription(uri).then((outcome) => {
       if (outcome.kind === 'draft' && outcome.text) {
-        // The draft pre-fills the editable field only when the parent has not
-        // already typed their own review text.
-        setReviewText((current) => (current.length === 0 ? outcome.text : current))
+        setCandidate((current) => (current && current.reviewText.length === 0 ? { ...current, reviewText: outcome.text! } : current))
       }
       setTranscribing(false)
     })
@@ -91,23 +107,26 @@ export function CaptureFlow({
 
   const cancel = () => {
     finalizeLock.current = false
-    // Always release the microphone so a cancelled recording cannot leak the
-    // session or block the next capture.
     void services.cancelRecording()
     void services.cancelTranscription()
-    setTranscribing(false)
-    setStep('idle')
-    setTranscript('')
-    setReviewText('')
-    setError(null)
-    setElapsedMs(0)
-    setValidated(null)
-    setCapturedUri(null)
     setPlaying(false)
-    void services.stopPlayback()
+    setTranscribing(false)
+    setError(null)
+    setRetryNote(null)
+    // With a prior reviewed candidate (or an interrupted Unsaved recording),
+    // cancellation returns to that truthful prior-answer state.
+    if (candidate) {
+      setStep('review')
+    } else {
+      setStep('idle')
+    }
   }
 
-  const begin = () => setStep('explain')
+  const begin = () => {
+    setError(null)
+    setRetryNote(null)
+    setStep('explain')
+  }
 
   const requestPermission = async () => {
     setStep('requesting')
@@ -116,39 +135,45 @@ export function CaptureFlow({
     if (state === 'granted') {
       await startRecording()
     } else {
-      setStep('manual')
+      // A denied permission during a replacement leaves the prior answer
+      // intact (candidate unchanged; return to review as the prior-answer
+      // state).
+      setStep(candidate ? 'review' : 'manual')
+      if (candidate) setRetryNote("The microphone wasn't available. Your previous answer is still here.")
     }
   }
 
   const startRecording = async () => {
     setError(null)
-    setStep('recording')
+    setRetryNote(null)
     setElapsedMs(0)
+    setStep('recording')
     try {
       await services.startRecording()
     } catch {
-      setStep('manual')
-      setError('The microphone could not start. Save their answer in writing instead.')
+      setStep(candidate ? 'review' : 'manual')
+      if (candidate) setRetryNote('The microphone could not start. Your previous answer is still here.')
+      else setError('The microphone could not start. Save their answer in writing instead.')
     }
   }
 
-  // Poll the recorder for the elapsed timer and to detect the automatic
-  // five-minute stop.
+  useEffect(() => {
+    lastStep.current = step
+  }, [step])
+
+  // Poll the recorder for the elapsed timer, the automatic five-minute stop,
+  // and an interruption stop (lifecycle) — all finalize through the same path.
   useEffect(() => {
     if (step !== 'recording') return
     const unsubscribe = services.subscribeRecording(() => {
       const status = services.recordingStatus()
       setElapsedMs(status.durationMs)
-      if (!status.recording && status.durationMs > 0) {
-        void finalize()
-      }
+      if (!status.recording && status.durationMs > 0) void finalize()
     })
     const timer = setInterval(() => {
       const status = services.recordingStatus()
       setElapsedMs(status.durationMs)
-      if (!status.recording && status.durationMs > 0) {
-        void finalize()
-      }
+      if (!status.recording && status.durationMs > 0) void finalize()
     }, 500)
     return () => {
       unsubscribe()
@@ -158,8 +183,6 @@ export function CaptureFlow({
   }, [step])
 
   const finalize = async () => {
-    // The automatic five-minute stop and the Finish button can race; a lock
-    // keeps finalization single-run so the recording is never finalized twice.
     if (finalizeLock.current) return
     finalizeLock.current = true
     setStep('finalizing')
@@ -167,20 +190,26 @@ export function CaptureFlow({
       const captured = await services.stopRecording()
       const result = await services.validateCapturedAudio(captured)
       if (result.kind === 'valid') {
-        setCapturedUri(captured.uri)
-        setValidated(result.media)
-        setReviewText('')
+        const next: Candidate = { uri: captured.uri, validated: result.media, reviewText: '' }
+        setCandidate(next)
+        services.putUnsavedRecording({ audio: result.media, reviewedText: '' })
         setStep('review')
-        // Best-effort on-device transcription in parallel; it never delays
-        // review and never touches the completed audio.
         attemptTranscription(captured.uri)
+      } else if (candidate) {
+        // A new capture that did not validate during a replacement leaves the
+        // prior reviewed answer intact.
+        setStep('review')
+        setRetryNote("The new recording couldn't be saved. Your previous answer is still here.")
       } else {
-        setCapturedUri(null)
-        setValidated(null)
         setStep('invalid')
       }
     } catch {
-      setStep('invalid')
+      if (candidate) {
+        setStep('review')
+        setRetryNote("The new recording couldn't be saved. Your previous answer is still here.")
+      } else {
+        setStep('invalid')
+      }
     } finally {
       finalizeLock.current = false
     }
@@ -191,46 +220,47 @@ export function CaptureFlow({
     void services.cancelTranscription()
     setPlaying(false)
     setTranscribing(false)
-    setReviewText('')
-    setValidated(null)
-    setCapturedUri(null)
+    setElapsedMs(0)
+    // The prior candidate stays untouched until a start succeeds.
     await startRecording()
   }
 
   const togglePlayback = async () => {
-    if (!capturedUri) return
+    if (!candidate) return
     if (playing) {
       await services.pausePlayback()
       setPlaying(false)
     } else {
-      await services.playUri(capturedUri)
+      await services.playUri(candidate.uri)
       setPlaying(true)
     }
   }
 
   const saveVoice = async (withText: boolean) => {
-    if (!validated) return
+    if (!candidate) return
     setStep('saving')
     setError(null)
     try {
       const result = await services.saveVoiceMemory({
         promptSnapshot,
-        reviewedTranscript: withText ? reviewText : '',
+        reviewedTranscript: withText ? candidate.reviewText : '',
         now: new Date(),
-        validatedMedia: validated,
+        validatedMedia: candidate.validated,
       })
       if (result.kind === 'saved') {
+        services.clearUnsavedRecording()
+        setCandidate(null)
         setStep('saved')
         void services.stopPlayback()
         return
       }
       if (result.kind === 'invalid-audio') {
-        setValidated(null)
         setStep('invalid')
+        services.clearUnsavedRecording()
+        setCandidate(null)
         return
       }
-      // A duplicate or write failure means this attempt saved nothing; the
-      // parent must not see a confirmation for an indeterminate outcome.
+      // Duplicate or write failure: this attempt saved nothing.
       setError("This answer wasn't saved. Please try again.")
       setStep('review')
     } catch (cause) {
@@ -282,12 +312,12 @@ export function CaptureFlow({
   const finish = () => {
     finalizeLock.current = false
     void services.cancelTranscription()
-    setTranscribing(false)
     setTranscript('')
-    setReviewText('')
-    setValidated(null)
-    setCapturedUri(null)
+    setCandidate(null)
     setPlaying(false)
+    setTranscribing(false)
+    setError(null)
+    setRetryNote(null)
     setStep('idle')
     onSaved()
   }
@@ -318,11 +348,7 @@ export function CaptureFlow({
           record, and your answer stays on this phone. Nothing is uploaded.
         </Text>
         {step === 'requesting' ? (
-          <View
-            accessibilityLabel="Requesting microphone access"
-            accessibilityRole="progressbar"
-            style={styles.requestingRow}
-          >
+          <View accessibilityLabel="Requesting microphone access" accessibilityRole="progressbar" style={styles.requestingRow}>
             <ActivityIndicator color={theme.primary} size="small" />
             <Text style={[styles.requestingText, { color: theme.muted }]}>
               Asking for microphone access…
@@ -348,14 +374,8 @@ export function CaptureFlow({
           {formatClock(elapsedMs)}
         </Text>
         <Text style={[styles.stepBody, { color: theme.muted }]}>
-          Recorded {formatClock(elapsedMs)} ·{' '}
-          {formatClock(Math.max(0, MAX_CAPTURE_DURATION_MS - elapsedMs))} remaining
+          Recorded {formatClock(elapsedMs)} · {formatClock(MAX_CAPTURE_DURATION_MS - elapsedMs)} remaining
         </Text>
-        {error ? (
-          <Text accessibilityLiveRegion="polite" style={[styles.errorText, { color: theme.primary }]}>
-            {error}
-          </Text>
-        ) : null}
         <View style={styles.action}>
           <ActionButton label="Finish recording" onPress={() => void finalize()} theme={theme} />
           <ActionButton label="Cancel" variant="secondary" onPress={cancel} theme={theme} />
@@ -367,11 +387,7 @@ export function CaptureFlow({
   if (step === 'finalizing' || step === 'saving') {
     return (
       <View style={styles.section}>
-        <View
-          accessibilityLabel={step === 'finalizing' ? 'Checking the recording' : 'Saving'}
-          accessibilityRole="progressbar"
-          style={styles.requestingRow}
-        >
+        <View accessibilityLabel={step === 'finalizing' ? 'Checking the recording' : 'Saving'} accessibilityRole="progressbar" style={styles.requestingRow}>
           <ActivityIndicator color={theme.primary} size="small" />
           <Text style={[styles.requestingText, { color: theme.muted }]}>
             {step === 'finalizing' ? 'Checking the recording…' : 'Saving…'}
@@ -399,49 +415,40 @@ export function CaptureFlow({
     )
   }
 
-  if (step === 'review') {
-    const canSaveWithWords = reviewText.trim().length > 0
+  if (step === 'review' && candidate) {
+    const canSaveWithWords = candidate.reviewText.trim().length > 0
     return (
       <View style={styles.section}>
         <Text accessibilityRole="header" style={[styles.stepTitle, { color: theme.text }]}>
           Review the answer
         </Text>
         <View style={styles.playRow}>
-          <ActionButton
-            label={playing ? 'Pause' : 'Play'}
-            variant="secondary"
-            onPress={() => void togglePlayback()}
-            theme={theme}
-          />
+          <ActionButton label={playing ? 'Pause' : 'Play'} variant="secondary" onPress={() => void togglePlayback()} theme={theme} />
         </View>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <ScrollView keyboardShouldPersistTaps="handled">
             <Text style={[styles.fieldLabel, { color: theme.text }]}>Their words (optional)</Text>
             {transcribing ? (
-              <Text style={[styles.transcribingHint, { color: theme.muted }]}>
-                Transcribing on this device…
-              </Text>
+              <Text style={[styles.transcribingHint, { color: theme.muted }]}>Transcribing on this device…</Text>
             ) : null}
             <TextInput
               accessibilityLabel="Their words (optional)"
               multiline
               maxLength={2000}
-              onChangeText={setReviewText}
+              onChangeText={(reviewText) => setCandidate((current) => (current ? { ...current, reviewText } : current))}
               placeholder="Correct or add the words…"
               placeholderTextColor={theme.muted}
-              style={[
-                styles.transcriptInput,
-                { backgroundColor: theme.surface, borderColor: theme.border, color: theme.text },
-              ]}
-              value={reviewText}
+              style={[styles.transcriptInput, { backgroundColor: theme.surface, borderColor: theme.border, color: theme.text }]}
+              value={candidate.reviewText}
             />
           </ScrollView>
         </KeyboardAvoidingView>
 
+        {retryNote ? (
+          <Text accessibilityLiveRegion="polite" style={[styles.retryNote, { color: theme.text }]}>{retryNote}</Text>
+        ) : null}
         {error ? (
-          <Text accessibilityLiveRegion="polite" style={[styles.errorText, { color: theme.primary }]}>
-            {error}
-          </Text>
+          <Text accessibilityLiveRegion="polite" style={[styles.errorText, { color: theme.primary }]}>{error}</Text>
         ) : null}
 
         <View style={styles.action}>
@@ -460,16 +467,11 @@ export function CaptureFlow({
   if (step === 'saved') {
     return (
       <View style={styles.section}>
-        <Text
-          accessibilityRole="header"
-          accessibilityLiveRegion="polite"
-          style={[styles.stepTitle, { color: theme.text }]}
-        >
+        <Text accessibilityRole="header" accessibilityLiveRegion="polite" style={[styles.stepTitle, { color: theme.text }]}>
           Saved
         </Text>
         <Text style={[styles.stepBody, { color: theme.muted }]}>
-          The answer is kept on this phone and now appears in the memories
-          list.
+          The answer is kept on this phone and now appears in the memories list.
         </Text>
         <View style={styles.action}>
           <ActionButton label="Done" onPress={finish} theme={theme} />
@@ -499,28 +501,18 @@ export function CaptureFlow({
             onChangeText={setTranscript}
             placeholder="Type what they said…"
             placeholderTextColor={theme.muted}
-            style={[
-              styles.transcriptInput,
-              { backgroundColor: theme.surface, borderColor: theme.border, color: theme.text },
-            ]}
+            style={[styles.transcriptInput, { backgroundColor: theme.surface, borderColor: theme.border, color: theme.text }]}
             value={transcript}
           />
         </ScrollView>
       </KeyboardAvoidingView>
 
       {error ? (
-        <Text accessibilityLiveRegion="polite" style={[styles.errorText, { color: theme.primary }]}>
-          {error}
-        </Text>
+        <Text accessibilityLiveRegion="polite" style={[styles.errorText, { color: theme.primary }]}>{error}</Text>
       ) : null}
 
       <View style={styles.action}>
-        <ActionButton
-          label="Save transcript"
-          disabled={!canSaveManual}
-          onPress={() => void saveManual()}
-          theme={theme}
-        />
+        <ActionButton label="Save transcript" disabled={!canSaveManual} onPress={() => void saveManual()} theme={theme} />
         <ActionButton label="Not now" variant="secondary" onPress={cancel} theme={theme} />
       </View>
     </View>
@@ -550,5 +542,6 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   errorText: { fontSize: 15, fontWeight: '600', marginTop: 14 },
+  retryNote: { fontSize: 15, lineHeight: 22, marginTop: 14, fontWeight: '600' },
   transcribingHint: { fontSize: 13, marginBottom: 8 },
 })

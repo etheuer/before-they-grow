@@ -1,3 +1,4 @@
+import { AppState } from 'react-native'
 import { createAudioPlayer } from 'expo-audio'
 import type { AudioPlayerPort } from '@before-they-grow/application'
 
@@ -5,8 +6,9 @@ import type { AudioPlayerPort } from '@before-they-grow/application'
  * Single active player for the review and timeline surfaces. The ended
  * subscription is attached to every player at load time, so completion always
  * notifies the registered listeners; playback pauses on an explicit parent
- * action. Privacy-sensitive lifecycle handling is the interruption slice
- * (#36).
+ * action AND on any privacy-sensitive lifecycle transition (background /
+ * inactive), resuming only after an explicit parent action. Privacy-sensitive
+ * lifecycle handling for capture is the interruption slice (#36).
  */
 export function createExpoAudioPlayerPort(): AudioPlayerPort {
   let player: ReturnType<typeof createAudioPlayer> | null = null
@@ -21,6 +23,16 @@ export function createExpoAudioPlayerPort(): AudioPlayerPort {
       }
     })
   }
+
+  const pauseForPrivacy = () => {
+    player?.pause()
+  }
+
+  // Pause playback on any privacy-sensitive lifecycle transition; it resumes
+  // only when the parent presses play again.
+  const appStateSubscription = AppState.addEventListener('change', (state) => {
+    if (state !== 'active') pauseForPrivacy()
+  })
 
   return {
     async load(uri: string) {
@@ -43,6 +55,7 @@ export function createExpoAudioPlayerPort(): AudioPlayerPort {
     },
 
     dispose() {
+      appStateSubscription.remove()
       endedSubscription?.remove()
       endedSubscription = null
       player?.remove()
