@@ -48,7 +48,13 @@
           }
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Before They Grow asks for the microphone only when you choose to record your child's answer on this phone."
+        }
+      ]
     ]
   }
 }

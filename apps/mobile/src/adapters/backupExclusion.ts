@@ -15,8 +15,6 @@ export type BackupExclusionPort = {
    * verified, and rejects on hard failure.
    */
   apply(path: string): Promise<boolean>
-  /** Reads the current exclusion state of the resource. */
-  isExcluded(path: string): Promise<boolean>
 }
 
 /**
@@ -27,9 +25,6 @@ export type BackupExclusionPort = {
 export function createAndroidBackupExclusion(): BackupExclusionPort {
   return {
     async apply() {
-      return true
-    },
-    async isExcluded() {
       return true
     },
   }
@@ -47,10 +42,6 @@ export function createIosBackupExclusion(): BackupExclusionPort {
     async apply(path) {
       const { setExcludedFromBackup } = await import('../../modules/btg-native/src')
       return setExcludedFromBackup(path, true)
-    },
-    async isExcluded(path) {
-      const { isExcludedFromBackup } = await import('../../modules/btg-native/src')
-      return isExcludedFromBackup(path)
     },
   }
 }

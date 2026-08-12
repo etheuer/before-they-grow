@@ -17,16 +17,20 @@ import {
   type ProtectedHomeState,
   type StorageBlockReason,
 } from '@before-they-grow/application'
-import type { AgeBand } from '@before-they-grow/domain'
+import { AGE_BANDS, type AgeBand } from '@before-they-grow/domain'
+import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import type { ProtectedAreaServices } from './services'
 import { ActionButton } from './components/ActionButton'
+import { CaptureFlow } from './CaptureFlow'
+import { TimelineScreen } from './TimelineScreen'
 import { darkTheme, useTheme, type Theme } from './theme'
 
-const AGE_BAND_CHOICES: ReadonlyArray<{ value: AgeBand; label: string }> = [
-  { value: '3-5', label: '3 to 5' },
-  { value: '6-8', label: '6 to 8' },
-  { value: '9-12', label: '9 to 12' },
-]
+const AGE_BAND_CHOICES: ReadonlyArray<{ value: AgeBand; label: string }> = AGE_BANDS.map(
+  (value) => ({
+    value,
+    label: value.split('-').join(' to '),
+  }),
+)
 
 const AGE_BAND_LABELS: Record<AgeBand, string> = {
   '3-5': 'Ages 3–5',
@@ -67,9 +71,16 @@ export function ProtectedArea({ services }: { services: ProtectedAreaServices })
 
   useEffect(() => {
     let cancelled = false
-    void services.bootstrap().then((state) => {
-      if (!cancelled) setBoot(state)
-    })
+    void services
+      .bootstrap()
+      .then((state) => {
+        if (!cancelled) setBoot(state)
+      })
+      .catch(() => {
+        // A non-gate failure (for example a catalog that could not be
+        // opened) must surface as a blocked state, never a stuck spinner.
+        if (!cancelled) setBoot({ kind: 'failed' })
+      })
     return () => {
       cancelled = true
     }
@@ -96,7 +107,65 @@ export function ProtectedArea({ services }: { services: ProtectedAreaServices })
       />
     )
   }
-  return <TonightScreen profile={boot.profile} prompt={boot.prompt} />
+  return (
+    <HomeShell
+      services={services}
+      profile={boot.profile}
+      prompt={boot.prompt}
+      onStorageBlocked={() => void reload()}
+    />
+  )
+}
+
+function HomeShell({
+  services,
+  profile,
+  prompt,
+  onStorageBlocked,
+}: {
+  services: ProtectedAreaServices
+  profile: { childNickname: string; ageBand: AgeBand }
+  prompt: { id: string; question: string; followUp: string; ageBand: AgeBand }
+  onStorageBlocked: () => void
+}) {
+  const theme = useTheme()
+  const [screen, setScreen] = useState<'tonight' | 'memories'>('tonight')
+  const [memories, setMemories] = useState<MemoryEntryV1[]>([])
+
+  const refreshTimeline = () => {
+    void services.loadMemoryTimeline().then(setMemories)
+  }
+
+  useEffect(() => {
+    refreshTimeline()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [services])
+
+  if (screen === 'memories') {
+    return (
+      <TimelineScreen
+        memories={memories}
+        childNickname={profile.childNickname}
+        onBack={() => setScreen('tonight')}
+        onAnswerTonight={() => setScreen('tonight')}
+        theme={theme}
+      />
+    )
+  }
+
+  return (
+    <TonightScreen
+      childNickname={profile.childNickname}
+      ageBand={profile.ageBand}
+      prompt={prompt}
+      memoriesCount={memories.length}
+      theme={theme}
+      services={services}
+      onOpenTimeline={() => setScreen('memories')}
+      onSaved={() => refreshTimeline()}
+      onStorageBlocked={onStorageBlocked}
+    />
+  )
 }
 
 function LoadingScreen() {
@@ -368,14 +437,26 @@ function ConsentToggle({
 }
 
 function TonightScreen({
-  profile,
+  childNickname,
+  ageBand,
   prompt,
+  memoriesCount,
+  theme,
+  services,
+  onOpenTimeline,
+  onSaved,
+  onStorageBlocked,
 }: {
-  profile: { childNickname: string; ageBand: AgeBand }
-  prompt: { question: string; followUp: string; ageBand: AgeBand }
+  childNickname: string
+  ageBand: AgeBand
+  prompt: { id: string; question: string; followUp: string; ageBand: AgeBand }
+  memoriesCount: number
+  theme: Theme
+  services: ProtectedAreaServices
+  onOpenTimeline: () => void
+  onSaved: () => void
+  onStorageBlocked: () => void
 }) {
-  const theme = useTheme()
-  const { childNickname, ageBand } = profile
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
       <StatusBar style={theme === darkTheme ? 'light' : 'dark'} />
@@ -402,6 +483,33 @@ function TonightScreen({
           <Text style={[styles.homeNote, { color: theme.muted }]}>
             A calm minute with {childNickname}. Everything you save stays on this phone.
           </Text>
+
+          <CaptureFlow
+            promptSnapshot={{
+              promptId: prompt.id,
+              question: prompt.question,
+              followUp: prompt.followUp,
+              ageBand,
+            }}
+            theme={theme}
+            requestRecordingPermission={services.requestRecordingPermission}
+            saveManualMemory={services.saveManualMemory}
+            onSaved={onSaved}
+            onStorageBlocked={onStorageBlocked}
+          />
+
+          <View style={styles.actions}>
+            <ActionButton
+              label={
+                memoriesCount === 0
+                  ? 'View memories'
+                  : `View ${memoriesCount} ${memoriesCount === 1 ? 'memory' : 'memories'}`
+              }
+              variant="secondary"
+              onPress={onOpenTimeline}
+              theme={theme}
+            />
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>

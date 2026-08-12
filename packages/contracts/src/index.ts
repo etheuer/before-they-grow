@@ -3,20 +3,11 @@ import type { AgeBand } from '@before-they-grow/domain'
 export const localPersistenceContractVersion = 1 as const
 
 /**
- * Version of the SQLite profile catalog schema (tables, columns, constraints).
- */
-export const profileSchemaVersion = 1 as const
-
-/**
- * Version of the on-disk layout under the canonical storage root
- * (directory arrangement and media-resource naming policy).
- */
-export const profileLayoutVersion = 1 as const
-
-/**
  * Version carried in SQLite's `PRAGMA user_version` for the profile database.
  * A database whose user_version does not match the schema version is refused
- * rather than interpreted.
+ * rather than interpreted. The contract and layout versions for v1 are
+ * enforced structurally: the canonical database file name encodes layout, and
+ * the carried schema is verified by table presence (see the mobile catalog).
  */
 export const profileUserVersion = 1 as const
 
@@ -26,6 +17,40 @@ export const profileUserVersion = 1 as const
  * rejected as a version-unsafe catalog.
  */
 export const profileDatabaseFileNameV1 = 'profile-v1.db' as const
+
+/**
+ * The kind of content a Local-only memory holds. Version 1 ships text-only
+ * memories (entered when voice capture was unavailable); media-backed
+ * memories arrive with the native voice slice.
+ */
+export type MemoryContentKind = 'text-only'
+
+/**
+ * Immutable snapshot of the prompt and age band at the time a memory was
+ * made, so later prompt edits never rewrite the family record.
+ */
+export type PromptSnapshotV1 = {
+  promptId: string
+  question: string
+  followUp: string
+  ageBand: AgeBand
+}
+
+/**
+ * One row of the v1 memory catalog. A text-only memory has no media
+ * reference; its reviewed transcript is always nonblank.
+ */
+export type MemoryEntryV1 = {
+  id: string
+  kind: MemoryContentKind
+  promptSnapshot: PromptSnapshotV1
+  reviewedTranscript: string
+  capturedAt: string
+  savedAt: string
+  localDate: string
+  timeZone: string
+  media: null
+}
 
 export type NativeProfileV1 = {
   id: string
@@ -40,9 +65,3 @@ export type ManagedMediaReferenceV1 = {
   byteCount: number
   sha256: string
 }
-
-/**
- * One row of the v1 profile catalog. The id is an opaque identifier generated
- * at creation time; child data never appears in filenames or preferences.
- */
-export type ProfileRowV1 = NativeProfileV1

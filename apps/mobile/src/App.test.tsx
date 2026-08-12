@@ -10,6 +10,7 @@ import type {
   CreateProfileResult,
   ProtectedHomeState,
 } from '@before-they-grow/application'
+import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import type { ProtectedAreaServices } from './services'
 import { LockedNativeShell } from './App'
 
@@ -53,21 +54,31 @@ function fakeProtectedArea(options: {
   initial?: ProtectedHomeState
   createResult?: CreateProfileResult
   homeAfterCreate?: ProtectedHomeState
+  permission?: 'granted' | 'denied' | 'unavailable'
+  memories?: MemoryEntryV1[]
+  bootstrapFailures?: number
 } = {}): ProtectedAreaServices & {
   creates: CreateProfileInput[]
   bootstrapCalls: number
+  savedManual: Array<{ transcript: string; recordingWasAvailable: boolean }>
 } {
   const state = {
     creates: [] as CreateProfileInput[],
     bootstrapCalls: 0,
+    savedManual: [] as Array<{ transcript: string; recordingWasAvailable: boolean }>,
+    memories: [...(options.memories ?? [])],
   }
   return {
     creates: state.creates,
+    savedManual: state.savedManual,
     get bootstrapCalls() {
       return state.bootstrapCalls
     },
     async bootstrap() {
       state.bootstrapCalls += 1
+      if (state.bootstrapCalls <= (options.bootstrapFailures ?? 0)) {
+        throw new Error('unexpected bootstrap failure')
+      }
       if (state.creates.length > 0 && options.homeAfterCreate) {
         return options.homeAfterCreate
       }
@@ -86,6 +97,33 @@ function fakeProtectedArea(options: {
         consentedAt: '2026-08-11T22:05:00.000Z',
         createdAt: '2026-08-11T22:05:00.000Z',
       } }
+    },
+    async requestRecordingPermission() {
+      return options.permission ?? 'unavailable'
+    },
+    async saveManualMemory(input) {
+      state.savedManual.push({
+        transcript: input.reviewedTranscript,
+        recordingWasAvailable: input.recordingWasAvailable,
+      })
+      const trimmed = input.reviewedTranscript.trim()
+      if (trimmed.length === 0) return { kind: 'invalid-transcript' }
+      const memory: MemoryEntryV1 = {
+        id: `memory-${state.savedManual.length}`,
+        kind: 'text-only',
+        promptSnapshot: input.promptSnapshot,
+        reviewedTranscript: trimmed,
+        capturedAt: input.now.toISOString(),
+        savedAt: input.now.toISOString(),
+        localDate: '2026-08-11',
+        timeZone: 'UTC',
+        media: null,
+      }
+      state.memories = [memory, ...state.memories]
+      return { kind: 'saved', memory }
+    },
+    async loadMemoryTimeline() {
+      return [...state.memories]
     },
   }
 }
@@ -298,4 +336,101 @@ describe('protected area', () => {
     await fireEvent.press(screen.getByRole('button', { name: 'Check again' }))
     expect(await screen.findByText('Family storage is unavailable')).toBeOnTheScreen()
   })
+
+  it('requests permission only after the parent chooses to record, then saves a manual transcript', async () => {
+    const area = fakeProtectedArea({ initial: homeWithProfile, permission: 'unavailable' })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    // No manual entry is shown until the parent chooses to record.
+    expect(screen.queryByText('No voice was captured')).toBeNull()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    expect(screen.getByText('A quick check first')).toBeOnTheScreen()
+    expect(screen.getByText(/asks for the microphone only when you choose to record/)).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('No voice was captured')).toBeOnTheScreen()
+
+    const input = screen.getByLabelText('Their answer in writing')
+    await fireEvent.changeText(input, '  I made my bed all by myself.  ')
+    await fireEvent.press(screen.getByRole('button', { name: 'Save transcript' }))
+
+    expect(await screen.findByText('Saved')).toBeOnTheScreen()
+    expect(area.savedManual).toHaveLength(1)
+    expect(area.savedManual[0]).toEqual({
+      transcript: '  I made my bed all by myself.  ',
+      recordingWasAvailable: false,
+    })
+  })
+
+  it('does not expose a text-only bypass when microphone capture is ready', async () => {
+    const area = fakeProtectedArea({ initial: homeWithProfile, permission: 'granted' })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+
+    expect(await screen.findByText('Microphone is ready')).toBeOnTheScreen()
+    expect(screen.queryByText('No voice was captured')).toBeNull()
+    expect(screen.queryByLabelText('Their answer in writing')).toBeNull()
+    expect(area.savedManual).toHaveLength(0)
+  })
+
+  it('shows saved memories newest first in the timeline', async () => {
+    const older = memoryEntry('older', '2026-08-10', 'I saw a rainbow.')
+    const newer = memoryEntry('newer', '2026-08-11', 'I made my bed by myself.')
+    const area = fakeProtectedArea({ initial: homeWithProfile, memories: [older, newer] })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'View 2 memories' }))
+
+    expect(await screen.findByText('Mila\'s memories')).toBeOnTheScreen()
+    expect(screen.getByText('August 11, 2026')).toBeOnTheScreen()
+    expect(screen.getByText('“I made my bed by myself.”')).toBeOnTheScreen()
+    expect(screen.getByText('“I saw a rainbow.”')).toBeOnTheScreen()
+  })
+
+  it('shows an empty timeline state that returns to tonight', async () => {
+    const area = fakeProtectedArea({ initial: homeWithProfile })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'View memories' }))
+    expect(await screen.findByText('No memories yet')).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole('button', { name: "Answer tonight's question" }))
+    expect(await screen.findByText('What happened today that made you feel proud?')).toBeOnTheScreen()
+  })
+  it('shows an unexpected bootstrap failure as a blocked state and recovers on retry', async () => {
+    const area = fakeProtectedArea({ initial: homeWithProfile, bootstrapFailures: 1 })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+
+    expect(await screen.findByText('Family storage is unavailable')).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Check again' }))
+    expect(await screen.findByText('What happened today that made you feel proud?')).toBeOnTheScreen()
+    expect(area.bootstrapCalls).toBe(2)
+  })
 })
+
+function memoryEntry(id: string, localDate: string, transcript: string): MemoryEntryV1 {
+  return {
+    id,
+    kind: 'text-only',
+    promptSnapshot: {
+      promptId: '6-8-memory-proud',
+      question: 'What happened today that made you feel proud?',
+      followUp: 'What did you do to make it happen?',
+      ageBand: '6-8',
+    },
+    reviewedTranscript: transcript,
+    capturedAt: '2026-08-11T20:00:00.000Z',
+    savedAt: '2026-08-11T20:00:00.000Z',
+    localDate,
+    timeZone: 'UTC',
+    media: null,
+  }
+}

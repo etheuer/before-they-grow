@@ -5,6 +5,7 @@ import {
 } from '@before-they-grow/application'
 import type { NativeProfileV1 } from '@before-they-grow/contracts'
 import type { BackupExclusionPort } from './backupExclusion'
+import { DATABASE_DDL, MEMORIES_TABLE, PROFILES_TABLE } from './sqliteSchema'
 
 /**
  * Narrows the expo-sqlite surface to exactly what the profile catalog needs,
@@ -19,6 +20,7 @@ export type SqliteTransactionPort = {
 export type SqliteClientPort = {
   open(): Promise<void>
   close(): Promise<void>
+  isOpen(): boolean
   getUserVersion(): Promise<number>
   setUserVersion(version: number): Promise<void>
   integrityCheck(): Promise<'ok' | 'failed'>
@@ -46,23 +48,12 @@ type ProfileRow = {
   created_at: string
 }
 
-const PROFILES_TABLE = 'profiles'
-
-const CREATE_PROFILES_SCHEMA = `
-CREATE TABLE IF NOT EXISTS profiles (
-  id TEXT PRIMARY KEY NOT NULL,
-  child_nickname TEXT NOT NULL CHECK (length(child_nickname) BETWEEN 1 AND 40),
-  age_band TEXT NOT NULL CHECK (age_band IN ('3-5', '6-8', '9-12')),
-  consented_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-`
-
 /**
  * SQLite-backed authoritative profile catalog with the persistence-contract
  * v1 gates: integrity, user/schema/layout version, and per-resource backup
  * exclusion. Any unsafe result blocks the catalog with a StorageGateError and
- * closes the client; it never presents an empty healthy store.
+ * closes the client; it never presents an empty healthy store. The catalog
+ * owns the full v1 schema (profiles + memories).
  */
 export function createSqliteProfileRepository(
   options: SqliteProfileRepositoryOptions,
@@ -87,16 +78,31 @@ export function createSqliteProfileRepository(
     const actualUserVersion = await client.getUserVersion()
     if (actualUserVersion === 0) {
       await client.transaction(async (txn) => {
-        await txn.run(CREATE_PROFILES_SCHEMA)
+        await txn.run(DATABASE_DDL)
       })
       await client.setUserVersion(userVersion)
-      return
+    } else {
+      if (actualUserVersion !== userVersion) {
+        throw new StorageGateError('version-unsafe')
+      }
+      const hasProfiles = await client.tableExists(PROFILES_TABLE)
+      // A missing profile catalog signals data loss and must block, never
+      // present an empty onboarding store.
+      if (!hasProfiles) throw new StorageGateError('version-unsafe')
+      const hasMemories = await client.tableExists(MEMORIES_TABLE)
+      if (!hasMemories) {
+        // Additive, idempotent upgrade: pre-memory v1 catalogs gain the
+        // memories table only; nothing existing is touched.
+        await client.transaction(async (txn) => {
+          await txn.run(DATABASE_DDL)
+        })
+      }
     }
-    if (actualUserVersion !== userVersion) {
+    const profilesTable = await client.tableExists(PROFILES_TABLE)
+    const memoriesTable = await client.tableExists(MEMORIES_TABLE)
+    if (!profilesTable || !memoriesTable) {
       throw new StorageGateError('version-unsafe')
     }
-    const hasTable = await client.tableExists(PROFILES_TABLE)
-    if (!hasTable) throw new StorageGateError('version-unsafe')
   }
 
   async function applyExclusions() {
@@ -114,8 +120,13 @@ export function createSqliteProfileRepository(
 
   return {
     async open() {
-      if (opened || closed) return
+      // A previous failed open may have closed the client; retrying must run
+      // the full verification again so the truthful gate reason is reported
+      // (a closed-forever repository would relabel every retry as
+      // integrity-failed and make the blocked screen's retry inert).
+      if (opened && !closed) return
       opened = true
+      closed = false
       try {
         await client.open()
         await verifyIntegrity()

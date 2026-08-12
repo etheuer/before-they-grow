@@ -3,11 +3,8 @@ import {
   type ProfileRepositoryPort,
 } from '@before-they-grow/application'
 import type { NativeProfileV1 } from '@before-they-grow/contracts'
-import {
-  createSqliteProfileRepository,
-  type SqliteClientPort,
-  type SqliteTransactionPort,
-} from './sqliteProfileRepository'
+import { createSqliteProfileRepository, type SqliteClientPort, type SqliteTransactionPort } from './sqliteProfileRepository'
+import { DATABASE_DDL, MEMORIES_TABLE, PROFILES_TABLE } from './sqliteSchema'
 import type { BackupExclusionPort } from './backupExclusion'
 
 const USER_VERSION = 1
@@ -56,6 +53,9 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
     async close() {
       state.closed = true
     },
+    isOpen() {
+      return state.opened && !state.closed
+    },
     async getUserVersion() {
       return state.userVersion
     },
@@ -70,7 +70,10 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
     },
     async run(sql: string) {
       if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL: ${sql}`)
-      if (sql.includes('profiles')) state.tables.add('profiles')
+      for (const statement of DATABASE_DDL.split(';')) {
+        if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
+        if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
+      }
     },
     async getAll<T>(sql: string, _params?: readonly unknown[]) {
       if (sql.includes('COUNT(*)')) {
@@ -85,7 +88,10 @@ function fakeClient(initial: FakeOptions = {}): SqliteClientPort & {
       const txn: SqliteTransactionPort = {
         async run(sql: string, params: readonly unknown[] = []) {
           if (sql.includes('CREATE TABLE')) {
-            state.tables.add('profiles')
+            for (const statement of DATABASE_DDL.split(';')) {
+              if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
+              if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
+            }
             return
           }
           if (sql.includes('INSERT INTO profiles')) {
@@ -132,9 +138,6 @@ function fakeExclusion(): FakeExclusion {
         return false
       }
       exclusion.applied.push(path)
-      return true
-    },
-    async isExcluded() {
       return true
     },
   }
@@ -204,6 +207,18 @@ describe('createSqliteProfileRepository', () => {
     await expect(repo.open()).rejects.toEqual(new StorageGateError('version-unsafe'))
   })
 
+  it('upgrades a pre-memory v1 catalog by adding only the memories table', async () => {
+    const client = fakeClient({ userVersion: USER_VERSION })
+    const exclusion = fakeExclusion()
+    client.state.tables.add('profiles')
+
+    await repository(client, exclusion).open()
+
+    expect(client.state.tables.has('profiles')).toBe(true)
+    expect(client.state.tables.has('memories')).toBe(true)
+    expect(client.state.userVersion).toBe(USER_VERSION)
+  })
+
   it('blocks a catalog at an unexpected database file name', async () => {
     const client = fakeClient({
       userVersion: 0,
@@ -234,6 +249,20 @@ describe('createSqliteProfileRepository', () => {
       new StorageGateError('backup-control-failed'),
     )
     expect(client.state.closed).toBe(true)
+  })
+
+  it('re-runs full verification on retry after a failed open, reporting the true blocked reason', async () => {
+    const client = fakeClient({ userVersion: USER_VERSION })
+    client.state.tables.add('profiles')
+    const exclusion = fakeExclusion()
+    const repo = repository(client, exclusion)
+    exclusion.failNext = true
+
+    await expect(repo.open()).rejects.toEqual(new StorageGateError('backup-control-failed'))
+
+    // A retry must re-verify rather than stay closed and misreport the cause.
+    await repo.open()
+    expect(await repo.findOnly()).toBeNull()
   })
 
   it('persists one profile and returns it with the v1 column mapping', async () => {

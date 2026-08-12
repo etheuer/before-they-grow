@@ -7,7 +7,6 @@ import { requireNativeModule } from 'expo-modules-core'
 function native() {
   return requireNativeModule('BtgNative') as {
     setExcludedFromBackup(path: string, excluded: boolean): Promise<boolean>
-    isExcludedFromBackup(path: string): Promise<boolean>
   }
 }
 
@@ -18,8 +17,4 @@ function native() {
  */
 export function setExcludedFromBackup(path: string, excluded: boolean): Promise<boolean> {
   return native().setExcludedFromBackup(path, excluded)
-}
-
-export function isExcludedFromBackup(path: string): Promise<boolean> {
-  return native().isExcludedFromBackup(path)
 }

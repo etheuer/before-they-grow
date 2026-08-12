@@ -1,6 +1,12 @@
 export type AgeBand = '3-5' | '6-8' | '9-12'
 export type PromptCategory = 'wonder' | 'memory' | 'feelings' | 'family' | 'play'
 
+/** Every supported age band, in display order. Single source of truth. */
+export const AGE_BANDS: readonly AgeBand[] = ['3-5', '6-8', '9-12']
+
+/** Maximum length of a child nickname, shared by UI and validation. */
+export const MAX_CHILD_NICKNAME_LENGTH = 40
+
 export type Prompt = {
   id: string
   ageBand: AgeBand

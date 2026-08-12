@@ -347,53 +347,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
   },
-  protectedScreen: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-  },
-  protectedContent: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingBottom: 48,
-  },
-  unlockedMark: {
-    borderRadius: 16,
-    height: 56,
-    marginBottom: 28,
-    position: 'relative',
-    width: 56,
-  },
-  unlockedStem: {
-    borderRadius: 3,
-    height: 6,
-    left: 15,
-    position: 'absolute',
-    top: 29,
-    transform: [{ rotate: '45deg' }],
-    width: 14,
-  },
-  unlockedTick: {
-    borderRadius: 3,
-    height: 6,
-    left: 23,
-    position: 'absolute',
-    top: 25,
-    transform: [{ rotate: '-45deg' }],
-    width: 22,
-  },
-  protectedTitle: {
-    fontSize: 42,
-    fontWeight: '700',
-    letterSpacing: -1.4,
-    lineHeight: 48,
-    maxWidth: 430,
-  },
-  protectedMessage: {
-    fontSize: 19,
-    lineHeight: 28,
-    marginTop: 16,
-    maxWidth: 430,
-  },
 })
 
 export default function App({ services }: { services: ProtectedAreaServices }) {

@@ -1,0 +1,115 @@
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import type { MemoryEntryV1 } from '@before-they-grow/contracts'
+import { ActionButton } from './components/ActionButton'
+import { formatDisplayDate } from './format'
+import type { Theme } from './theme'
+
+function MemoryRow({ memory, theme }: { memory: MemoryEntryV1; theme: Theme }) {
+  return (
+    <View
+      accessibilityLabel={`${formatDisplayDate(memory.localDate)}, ${memory.promptSnapshot.question}: ${memory.reviewedTranscript}`}
+      style={[styles.memoryCard, { backgroundColor: theme.surface, borderColor: theme.border }]}
+    >
+      <Text style={[styles.memoryDate, { color: theme.primary }]}>
+        {formatDisplayDate(memory.localDate)}
+      </Text>
+      <Text style={[styles.memoryQuestion, { color: theme.muted }]}>
+        {memory.promptSnapshot.question}
+      </Text>
+      <Text style={[styles.memoryText, { color: theme.text }]}>
+        “{memory.reviewedTranscript}”
+      </Text>
+    </View>
+  )
+}
+
+export function TimelineScreen({
+  memories,
+  childNickname,
+  onBack,
+  onAnswerTonight,
+  theme,
+}: {
+  memories: MemoryEntryV1[]
+  childNickname: string
+  onBack: () => void
+  onAnswerTonight: () => void
+  theme: Theme
+}) {
+  return (
+    <ScrollView
+      alwaysBounceVertical={false}
+      contentContainerStyle={styles.scroll}
+      style={{ backgroundColor: theme.background }}
+    >
+      <View style={styles.screenWidth}>
+        <View style={styles.headerRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Back to tonight's question"
+            onPress={onBack}
+            style={({ pressed }) => [
+              styles.backButton,
+              { backgroundColor: theme.surface, borderColor: theme.border },
+              pressed ? styles.pressed : null,
+            ]}
+          >
+            <Text style={[styles.backLabel, { color: theme.text }]}>‹ Tonight</Text>
+          </Pressable>
+        </View>
+
+        <Text accessibilityRole="header" style={[styles.title, { color: theme.text }]}>
+          {childNickname}'s memories
+        </Text>
+        <Text style={[styles.subtitle, { color: theme.muted }]}>
+          Saved newest first, kept only on this phone.
+        </Text>
+
+        {memories.length === 0 ? (
+          <View style={[styles.emptyCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <Text style={[styles.emptyTitle, { color: theme.text }]}>No memories yet</Text>
+            <Text style={[styles.emptyBody, { color: theme.muted }]}>
+              Tonight's question is waiting. When a memory is saved it appears here.
+            </Text>
+            <View style={styles.emptyAction}>
+              <ActionButton label="Answer tonight's question" onPress={onAnswerTonight} theme={theme} />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.list}>
+            {memories.map((memory) => (
+              <MemoryRow key={memory.id} memory={memory} theme={theme} />
+            ))}
+          </View>
+        )}
+      </View>
+    </ScrollView>
+  )
+}
+
+const styles = StyleSheet.create({
+  scroll: { flexGrow: 1, paddingHorizontal: 24, paddingVertical: 20 },
+  screenWidth: { alignSelf: 'center', maxWidth: 560, width: '100%' },
+  headerRow: { alignItems: 'flex-start' },
+  backButton: {
+    alignItems: 'center',
+    borderRadius: 999,
+    borderWidth: 1,
+    minHeight: 40,
+    paddingHorizontal: 14,
+    justifyContent: 'center',
+  },
+  backLabel: { fontSize: 15, fontWeight: '700' },
+  pressed: { opacity: 0.7 },
+  title: { fontSize: 32, fontWeight: '700', letterSpacing: -1, lineHeight: 38, marginTop: 18 },
+  subtitle: { fontSize: 15, lineHeight: 22, marginTop: 6 },
+  list: { gap: 14, marginTop: 22 },
+  memoryCard: { borderRadius: 16, borderWidth: 1, padding: 16 },
+  memoryDate: { fontSize: 13, fontWeight: '800', textTransform: 'uppercase' },
+  memoryQuestion: { fontSize: 15, lineHeight: 22, marginTop: 8 },
+  memoryText: { fontSize: 19, lineHeight: 27, marginTop: 10 },
+  emptyCard: { borderRadius: 16, borderWidth: 1, marginTop: 24, padding: 20 },
+  emptyTitle: { fontSize: 20, fontWeight: '700' },
+  emptyBody: { fontSize: 15, lineHeight: 22, marginTop: 8 },
+  emptyAction: { marginTop: 20 },
+})

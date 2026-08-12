@@ -1,4 +1,10 @@
-import { getPromptForDate, type AgeBand, type Prompt } from '@before-they-grow/domain'
+import {
+  AGE_BANDS,
+  MAX_CHILD_NICKNAME_LENGTH,
+  getPromptForDate,
+  type AgeBand,
+  type Prompt,
+} from '@before-they-grow/domain'
 import type { NativeProfileV1 } from '@before-they-grow/contracts'
 
 /**
@@ -58,8 +64,7 @@ export type CreateProfileDependencies = {
   generateId: () => string
 }
 
-const VALID_AGE_BANDS: readonly AgeBand[] = ['3-5', '6-8', '9-12']
-const MAX_NICKNAME_LENGTH = 40
+const VALID_AGE_BANDS: readonly AgeBand[] = AGE_BANDS
 
 export async function createProfile(
   deps: CreateProfileDependencies,
@@ -68,7 +73,7 @@ export async function createProfile(
 ): Promise<CreateProfileResult> {
   const childNickname = input.childNickname.trim()
 
-  if (childNickname.length === 0 || childNickname.length > MAX_NICKNAME_LENGTH) {
+  if (childNickname.length === 0 || childNickname.length > MAX_CHILD_NICKNAME_LENGTH) {
     return { kind: 'invalid-nickname' }
   }
   if (!VALID_AGE_BANDS.includes(input.ageBand)) {

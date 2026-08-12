@@ -18,11 +18,5 @@ public class BtgNativeModule: Module {
       let applied = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
       return applied.isExcludedFromBackup == excluded
     }
-
-    AsyncFunction("isExcludedFromBackup") { (path: String) -> Bool in
-      let url = URL(fileURLWithPath: path)
-      let values = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
-      return values.isExcludedFromBackup ?? false
-    }
   }
 }
