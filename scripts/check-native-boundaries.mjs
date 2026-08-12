@@ -4,9 +4,10 @@ import process from 'node:process'
 
 const sourceRoots = ['apps/mobile', 'packages']
 const sourceExtensions = new Set(['.js', '.jsx', '.ts', '.tsx'])
-// Native source is scanned for the transcription policy only (a cloud STT SDK
-// cannot be imported there, but a raw network speech call could be authored).
+// Native source is scanned for the transcription policy too, so an authored
+// network speech call cannot hide outside the JS boundary.
 const nativeSourceExtensions = new Set(['.swift', '.kt'])
+const allSourceExtensions = new Set([...sourceExtensions, ...nativeSourceExtensions])
 const forbiddenSource = [
   ['React DOM', /(?:from\s+['"]react-dom(?:\/[^'"]*)?['"]|require\(['"]react-dom)/],
   ['browser globals', /\b(?:window|document|indexedDB|MediaRecorder)\b/],
@@ -37,7 +38,7 @@ async function sourceFiles(directory) {
     const candidate = path.join(directory, entry.name)
     if (entry.isDirectory() && ['node_modules', '.expo'].includes(entry.name)) return []
     if (entry.isDirectory()) return sourceFiles(candidate)
-    return sourceExtensions.has(path.extname(entry.name)) ? [candidate] : []
+    return allSourceExtensions.has(path.extname(entry.name)) ? [candidate] : []
   }))
   return files.flat()
 }
@@ -46,24 +47,15 @@ const violations = []
 for (const root of sourceRoots) {
   for (const file of await sourceFiles(root)) {
     const contents = await readFile(file, 'utf8')
-    const patterns = root === 'packages'
-      ? [...forbiddenSource, ...forbiddenNeutralSource]
-      : forbiddenSource
-    for (const [label, pattern] of patterns) {
-      if (pattern.test(contents)) violations.push(`${file}: ${label}`)
+    if (sourceExtensions.has(path.extname(file))) {
+      const patterns = root === 'packages'
+        ? [...forbiddenSource, ...forbiddenNeutralSource]
+        : forbiddenSource
+      for (const [label, pattern] of patterns) {
+        if (pattern.test(contents)) violations.push(`${file}: ${label}`)
+      }
     }
-    for (const [label, pattern] of forbiddenTranscription) {
-      if (pattern.test(contents)) violations.push(`${file}: forbidden ${label}`)
-    }
-  }
-}
-
-// Native modules (Swift/Kotlin) are scanned for the transcription policy too,
-// so an authored network speech call cannot hide outside the JS boundary.
-for (const root of sourceRoots) {
-  for (const file of await sourceFiles(root)) {
-    if (!nativeSourceExtensions.has(path.extname(file))) continue
-    const contents = await readFile(file, 'utf8')
+    // The no-network-speech policy applies to JS and native source alike.
     for (const [label, pattern] of forbiddenTranscription) {
       if (pattern.test(contents)) violations.push(`${file}: forbidden ${label}`)
     }
