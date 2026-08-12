@@ -65,6 +65,8 @@ export type ProtectedAreaServices = {
   getUnsavedRecording(): UnsavedRecording | null
   putUnsavedRecording(recording: UnsavedRecording): void
   clearUnsavedRecording(): void
+  /** One-time notice that an interrupted capture was not retained. */
+  consumeInterruptionNotice(): boolean
   // --- lifecycle ---
   subscribeLifecycle(listener: (state: 'active' | 'inactive' | 'background') => void): () => void
   // --- native voice path (#34) ---
@@ -136,20 +138,37 @@ export function createProtectedAreaServices(
   const transcriber = createTranscriptionCoordinator({ transcriber: transcriberPort })
   const unsaved = createTransientCaptureStore()
   const appLifecycle = createExpoLifecyclePort()
+  let cleanedCacheThisProcess = false
+  let interruptionNotice = false
 
   // An interrupted-but-valid capture is retained as an in-process Unsaved
-  // recording for review after re-authentication, never persisted.
+  // recording for review after re-authentication, never persisted. A capture
+  // that could not be retained (no valid audio, or a prior reviewed answer
+  // that must be preserved) raises a one-time "not saved" notice.
   recorder.onInterrupted((captured) => {
-    void publishInterruptedCapture({ inspector, store: unsaved }, captured)
+    void publishInterruptedCapture({ inspector, store: unsaved }, captured).then((outcome) => {
+      if (outcome.kind === 'not-kept') interruptionNotice = true
+    })
   })
 
   return {
     async bootstrap(date = now()) {
-      // A process start removes stale capture-cache files and never offers
-      // them as recoverable drafts.
-      await cleanStaleCaptureCache()
+      // Stale capture-cache cleanup runs once per process start, never on an
+      // App-lock remount, so an in-process Unsaved recording's file survives
+      // the obscured/unlocked transition; a relaunch starts a fresh process
+      // and clears leftovers.
+      if (!cleanedCacheThisProcess) {
+        cleanedCacheThisProcess = true
+        await cleanStaleCaptureCache()
+      }
       const { profile } = await getRepositorySet()
       return loadProtectedHomeState({ repository: profile }, date)
+    },
+
+    consumeInterruptionNotice() {
+      const notice = interruptionNotice
+      interruptionNotice = false
+      return notice
     },
 
     getUnsavedRecording() {

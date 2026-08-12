@@ -49,12 +49,19 @@ export type InterruptedCaptureOutcome =
 /**
  * Handles a capture stopped by a lifecycle/audio interruption. A valid
  * candidate is retained as an in-process Unsaved recording for review after
- * re-authentication, with no persistence claim; anything invalid is dropped.
+ * re-authentication only when the store is empty; an interruption during a
+ * replacement attempt must never clobber the prior reviewed answer (only a
+ * fully validated, parent-reviewed replacement supersedes it). Anything
+ * invalid or that would overwrite a prior candidate is dropped.
  */
 export async function publishInterruptedCapture(
   deps: { inspector: MediaInspectorPort; store: TransientCaptureStore },
   captured: CapturedAudio,
 ): Promise<InterruptedCaptureOutcome> {
+  // A prior reviewed answer is preserved; the interrupted new capture is not
+  // retained (it was never validated by the parent).
+  if (deps.store.get() !== null) return { kind: 'not-kept' }
+
   const result = await finalizeVoiceCapture({ inspector: deps.inspector }, captured)
   if (result.kind !== 'valid') return { kind: 'not-kept' }
   const recording: UnsavedRecording = { audio: result.media, reviewedText: '' }

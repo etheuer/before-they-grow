@@ -249,6 +249,9 @@ function fakeProtectedArea(options: {
     clearUnsavedRecording() {
       state.unsaved = null
     },
+    consumeInterruptionNotice() {
+      return false
+    },
   }
   return api
 }
@@ -785,6 +788,24 @@ describe('protected area', () => {
     expect(
       await screen.findByText("The new recording couldn't be saved. Your previous answer is still here."),
     ).toBeOnTheScreen()
+    expect(area.savedVoice).toHaveLength(0)
+  })
+
+  it('discard really discards the reviewed candidate and returns to a ready state', async () => {
+    const area = fakeProtectedArea({ initial: homeWithProfile, permission: 'granted' })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await screen.findByText('What happened today that made you feel proud?')
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Record their voice' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Recording')).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole('button', { name: 'Finish recording' }))
+    expect(await screen.findByText('Review the answer')).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Discard' }))
+
+    expect(await screen.findByText('Capture the answer')).toBeOnTheScreen()
+    expect(screen.queryByText('Review the answer')).toBeNull()
     expect(area.savedVoice).toHaveLength(0)
   })
 

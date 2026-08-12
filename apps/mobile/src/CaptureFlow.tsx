@@ -71,17 +71,22 @@ export function CaptureFlow({
   const [retryNote, setRetryNote] = useState<string | null>(null)
   const [candidate, setCandidate] = useState<Candidate | null>(null)
   const [elapsedMs, setElapsedMs] = useState(0)
+  const [interruptionNotice, setInterruptionNotice] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const finalizeLock = useRef(false)
   const lastStep = useRef(step)
 
-  // Restore an in-process Unsaved recording after the App-lock transition.
+  // Restore an in-process Unsaved recording after the App-lock transition,
+  // and surface a one-time notice when an interrupted capture was not kept.
   useEffect(() => {
     const unsaved = services.getUnsavedRecording()
     if (unsaved && !candidate && step === 'idle') {
       setCandidate({ uri: unsaved.audio.uri, validated: unsaved.audio, reviewText: unsaved.reviewedText })
       setStep('review')
+    }
+    if (services.consumeInterruptionNotice()) {
+      setInterruptionNotice(true)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [services])
@@ -120,6 +125,21 @@ export function CaptureFlow({
     } else {
       setStep('idle')
     }
+  }
+
+  // Discard is a real, irreversible discard of the current candidate: it
+  // clears the store and the component and returns to a truthful ready state.
+  const discard = () => {
+    finalizeLock.current = false
+    void services.cancelRecording()
+    void services.cancelTranscription()
+    services.clearUnsavedRecording()
+    setCandidate(null)
+    setPlaying(false)
+    setTranscribing(false)
+    setError(null)
+    setRetryNote(null)
+    setStep('idle')
   }
 
   const begin = () => {
@@ -330,6 +350,11 @@ export function CaptureFlow({
           Record their voice, or save their words in writing when recording is
           unavailable on this phone.
         </Text>
+        {interruptionNotice ? (
+          <Text accessibilityLiveRegion="polite" style={[styles.retryNote, { color: theme.text }]}>
+            The recording was interrupted and wasn't saved. You can try again.
+          </Text>
+        ) : null}
         <View style={styles.action}>
           <ActionButton label="Record their voice" onPress={begin} theme={theme} />
         </View>
@@ -409,7 +434,7 @@ export function CaptureFlow({
         </Text>
         <View style={styles.action}>
           <ActionButton label="Record again" onPress={() => void recordAgain()} theme={theme} />
-          <ActionButton label="Discard" variant="secondary" onPress={cancel} theme={theme} />
+          <ActionButton label="Discard" variant="secondary" onPress={discard} theme={theme} />
         </View>
       </View>
     )
@@ -458,7 +483,7 @@ export function CaptureFlow({
             theme={theme}
           />
           <ActionButton label="Record again" variant="secondary" onPress={() => void recordAgain()} theme={theme} />
-          <ActionButton label="Discard" variant="secondary" onPress={cancel} theme={theme} />
+          <ActionButton label="Discard" variant="secondary" onPress={discard} theme={theme} />
         </View>
       </View>
     )

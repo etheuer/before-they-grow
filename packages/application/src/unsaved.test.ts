@@ -68,4 +68,15 @@ describe('createTransientCaptureStore', () => {
     expect(outcome).toEqual({ kind: 'not-kept' })
     expect(store.get()).toBeNull()
   })
+
+  it('never clobbers a prior reviewed candidate on interruption', async () => {
+    const store = createTransientCaptureStore()
+    store.put({ audio, reviewedText: 'prior answer' })
+    const outcome = await publishInterruptedCapture(
+      { inspector: inspector('valid'), store },
+      { uri: 'file:///cache/interrupted.m4a', durationMs: 9000 },
+    )
+    expect(outcome).toEqual({ kind: 'not-kept' })
+    expect(store.get()).toEqual({ audio, reviewedText: 'prior answer' })
+  })
 })
