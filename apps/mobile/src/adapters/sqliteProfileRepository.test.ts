@@ -7,7 +7,13 @@ import {
 } from '@before-they-grow/application'
 import type { NativeProfileV1 } from '@before-they-grow/contracts'
 import { createSqliteProfileRepository, type SqliteClientPort, type SqliteTransactionPort } from './sqliteProfileRepository'
-import { DATABASE_DDL_V2, MEMORIES_TABLE, PROFILES_TABLE, SAVE_OPERATIONS_TABLE } from './sqliteSchema'
+import {
+  DATABASE_DDL_V2,
+  DELETION_OPERATIONS_TABLE,
+  MEMORIES_TABLE,
+  PROFILES_TABLE,
+  SAVE_OPERATIONS_TABLE,
+} from './sqliteSchema'
 import type { BackupExclusionPort } from './backupExclusion'
 
 const USER_VERSION = 2
@@ -44,6 +50,7 @@ function applyExec(state: { userVersion: number; tables: Set<string> }, sql: str
   if (sql.includes('memories_v2')) {
     state.tables.add(MEMORIES_TABLE)
     state.tables.add(SAVE_OPERATIONS_TABLE)
+    state.tables.add(DELETION_OPERATIONS_TABLE)
     return
   }
   if (!sql.includes('CREATE TABLE')) throw new Error(`Unexpected non-DDL exec: ${sql}`)
@@ -51,6 +58,7 @@ function applyExec(state: { userVersion: number; tables: Set<string> }, sql: str
     if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
     if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
     if (statement.includes(SAVE_OPERATIONS_TABLE)) state.tables.add(SAVE_OPERATIONS_TABLE)
+    if (statement.includes(DELETION_OPERATIONS_TABLE)) state.tables.add(DELETION_OPERATIONS_TABLE)
   }
 }
 

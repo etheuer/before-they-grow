@@ -3,6 +3,9 @@ import {
   SaveCapacityError,
   SaveIndeterminateError,
   StorageGateError,
+  type IndividualDeletionPhase,
+  type IndividualDeletionPort,
+  type IndividualDeletionRecord,
   type MemoryRepositoryPort,
   type SaveJournalPort,
   type SaveJournalPrepareResult,
@@ -11,7 +14,7 @@ import {
 import type { MemoryEntryV1, ManagedMediaReferenceV1, MemoryContentKind } from '@before-they-grow/contracts'
 import type { AgeBand } from '@before-they-grow/domain'
 import type { SqliteClientPort } from './sqliteProfileRepository'
-import { MEMORIES_TABLE, SAVE_OPERATIONS_TABLE } from './sqliteSchema'
+import { DELETION_OPERATIONS_TABLE, MEMORIES_TABLE, SAVE_OPERATIONS_TABLE } from './sqliteSchema'
 
 type MemoryRow = {
   id: string
@@ -28,6 +31,12 @@ type MemoryRow = {
   media_ref: string | null
   media_byte_count: number | null
   media_sha256: string | null
+}
+
+type DeletionRow = {
+  memory_id: string
+  relative_path: string | null
+  phase: IndividualDeletionPhase
 }
 
 type JournalRow = {
@@ -153,7 +162,17 @@ async function verifyJournalVisible(
  * catalog. A save commits in one exclusive transaction and is reported only
  * after the row can be queried back; the timeline reads newest first.
  */
-export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRepositoryPort {
+function mapDeletion(row: DeletionRow): IndividualDeletionRecord {
+  return {
+    memoryId: row.memory_id,
+    relativePath: row.relative_path,
+    phase: row.phase,
+  }
+}
+
+export function createSqliteMemoryRepository(
+  client: SqliteClientPort,
+): MemoryRepositoryPort & IndividualDeletionPort {
   const journal: SaveJournalPort = {
     async prepare(operation): Promise<SaveJournalPrepareResult> {
       try {
@@ -384,6 +403,7 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
                 prompt_age_band, reviewed_transcript, captured_at, saved_at,
                 local_date, time_zone, media_ref, media_byte_count, media_sha256
          FROM ${MEMORIES_TABLE}
+         WHERE id NOT IN (SELECT memory_id FROM ${DELETION_OPERATIONS_TABLE})
          ORDER BY saved_at DESC`,
       )
       return rows.map(mapRow)
@@ -421,6 +441,109 @@ export function createSqliteMemoryRepository(client: SqliteClientPort): MemoryRe
         if (isOutOfSpace(error)) throw new SaveCapacityError()
         throw new SaveIndeterminateError('database-commit-uncertain')
       }
+    },
+
+    async markDeleting(id) {
+      if (!client.isOpen()) throw new StorageGateError('integrity-failed')
+      try {
+        return await client.transaction(async (txn) => {
+          const pending = await txn.getAll<DeletionRow>(
+            `SELECT memory_id, relative_path, phase FROM ${DELETION_OPERATIONS_TABLE} WHERE memory_id = ?`,
+            [id],
+          )
+          if (pending[0]) return mapDeletion(pending[0])
+          const rows = await txn.getAll<MemoryRow>(
+            `SELECT id, kind, prompt_id, prompt_question, prompt_follow_up,
+                    prompt_age_band, reviewed_transcript, captured_at, saved_at,
+                    local_date, time_zone, media_ref, media_byte_count, media_sha256
+             FROM ${MEMORIES_TABLE}
+             WHERE id = ?
+             LIMIT 1`,
+            [id],
+          )
+          const row = rows[0]
+          if (!row) return 'missing' as const
+          await txn.run(
+            `INSERT INTO ${DELETION_OPERATIONS_TABLE} (memory_id, relative_path, phase) VALUES (?, ?, ?)`,
+            [id, row.media_ref, 'marked'],
+          )
+          return {
+            memoryId: id,
+            relativePath: row.media_ref,
+            phase: 'marked' as const,
+          }
+        })
+      } catch (error) {
+        if (error instanceof StorageGateError) throw error
+        throw new StorageGateError('deletion-incomplete')
+      }
+    },
+
+    async listPending() {
+      if (!client.isOpen()) throw new StorageGateError('integrity-failed')
+      const rows = await client.getAll<DeletionRow>(
+        `SELECT memory_id, relative_path, phase FROM ${DELETION_OPERATIONS_TABLE}`,
+      )
+      return rows.map(mapDeletion)
+    },
+
+    async advancePhase(memoryId, phase) {
+      if (!client.isOpen()) throw new StorageGateError('integrity-failed')
+      await client.transaction(async (txn) => {
+        await txn.run(
+          `UPDATE ${DELETION_OPERATIONS_TABLE} SET phase = ? WHERE memory_id = ?`,
+          [phase, memoryId],
+        )
+      })
+    },
+
+    async removeRows(memoryId) {
+      if (!client.isOpen()) throw new StorageGateError('integrity-failed')
+      try {
+        await client.transaction(async (txn) => {
+          await txn.exec('PRAGMA secure_delete = ON')
+          await txn.run(
+            `DELETE FROM ${SAVE_OPERATIONS_TABLE} WHERE memory_id = ?`,
+            [memoryId],
+          )
+          await txn.run(
+            `DELETE FROM ${MEMORIES_TABLE} WHERE id = ?`,
+            [memoryId],
+          )
+        })
+      } catch (error) {
+        if (error instanceof StorageGateError) throw error
+        throw new StorageGateError('deletion-incomplete')
+      }
+    },
+
+    async checkpoint() {
+      if (!client.isOpen()) throw new StorageGateError('integrity-failed')
+      try {
+        await client.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+      } catch (error) {
+        if (error instanceof StorageGateError) throw error
+        throw new StorageGateError('deletion-incomplete')
+      }
+    },
+
+    async verifyAbsent(memoryId) {
+      if (!client.isOpen()) throw new StorageGateError('integrity-failed')
+      const rows = await client.getAll<{ id: string }>(
+        `SELECT id FROM ${MEMORIES_TABLE} WHERE id = ?`,
+        [memoryId],
+      )
+      return rows.length === 0
+    },
+
+    async clear(memoryId) {
+      if (!client.isOpen()) throw new StorageGateError('integrity-failed')
+      await client.transaction(async (txn) => {
+        await txn.run(
+          `DELETE FROM ${DELETION_OPERATIONS_TABLE} WHERE memory_id = ?`,
+          [memoryId],
+        )
+      })
     },
   }
 }

@@ -6,8 +6,20 @@ import {
 } from '@before-they-grow/application'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import { createSqliteMemoryRepository } from './sqliteMemoryRepository'
-import { DATABASE_DDL_V2, MEMORIES_TABLE, PROFILES_TABLE, SAVE_OPERATIONS_TABLE } from './sqliteSchema'
+import {
+  DATABASE_DDL_V2,
+  DELETION_OPERATIONS_TABLE,
+  MEMORIES_TABLE,
+  PROFILES_TABLE,
+  SAVE_OPERATIONS_TABLE,
+} from './sqliteSchema'
 import type { SqliteClientPort, SqliteTransactionPort } from './sqliteProfileRepository'
+
+type DeletionOperationRow = {
+  memory_id: string
+  relative_path: string | null
+  phase: 'marked' | 'media-removed' | 'rows-deleted'
+}
 
 type SaveOperationRow = {
   operation_id: string
@@ -43,9 +55,12 @@ function fakeClient() {
     tables: new Set<string>(),
     memories: [] as MemoryRow[],
     operations: [] as SaveOperationRow[],
+    deletions: [] as DeletionOperationRow[],
     transactionFailure: null as Error | null,
     postCommitFailure: null as Error | null,
     hideVerification: false,
+    checkpoints: 0,
+    checkpointFailure: null as Error | null,
   }
   const client: SqliteClientPort = {
     async open() {
@@ -68,14 +83,26 @@ function fakeClient() {
       return state.tables.has(name)
     },
     async run() {},
-    async exec(_sql: string) {
+    async exec(sql: string) {
+      if (sql.includes('wal_checkpoint')) {
+        if (state.checkpointFailure) throw state.checkpointFailure
+        state.checkpoints += 1
+        return
+      }
       for (const statement of DATABASE_DDL_V2.split(';')) {
         if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
         if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
         if (statement.includes(SAVE_OPERATIONS_TABLE)) state.tables.add(SAVE_OPERATIONS_TABLE)
+        if (statement.includes(DELETION_OPERATIONS_TABLE)) state.tables.add(DELETION_OPERATIONS_TABLE)
       }
     },
     async getAll<T>(sql: string, params: readonly unknown[] = []) {
+      if (sql.includes(`FROM ${DELETION_OPERATIONS_TABLE}`) && !sql.includes(`FROM ${MEMORIES_TABLE}`)) {
+        const rows = sql.includes('WHERE memory_id = ?')
+          ? state.deletions.filter((entry) => entry.memory_id === params[0])
+          : state.deletions
+        return rows.map((entry) => ({ ...entry })) as unknown as T[]
+      }
       if (sql.includes(`FROM ${SAVE_OPERATIONS_TABLE}`)) {
         const operations = state.operations.filter((operation) =>
           sql.includes('ORDER BY')
@@ -95,7 +122,9 @@ function fakeClient() {
           .map((memory) => ({ ...memory })) as unknown as T[]
       }
       if (sql.includes('FROM memories') && sql.includes('ORDER BY saved_at DESC')) {
+        const hidden = new Set(state.deletions.map((entry) => entry.memory_id))
         return [...state.memories]
+          .filter((memory) => !hidden.has(memory.id))
           .sort((a, b) => b.saved_at.localeCompare(a.saved_at))
           .map((m) => ({ ...m })) as unknown as T[]
       }
@@ -111,14 +140,17 @@ function fakeClient() {
     async transaction<T>(block: (txn: SqliteTransactionPort) => Promise<T>) {
       const memoriesBefore = state.memories.map((memory) => ({ ...memory }))
       const operationsBefore = state.operations.map((operation) => ({ ...operation }))
+      const deletionsBefore = state.deletions.map((entry) => ({ ...entry }))
       const tablesBefore = new Set(state.tables)
       let blockCompleted = false
       const txn: SqliteTransactionPort = {
-        async exec() {
+        async exec(sql: string) {
+          if (sql.includes('secure_delete')) return
           for (const statement of DATABASE_DDL_V2.split(';')) {
             if (statement.includes(PROFILES_TABLE)) state.tables.add(PROFILES_TABLE)
             if (statement.includes(MEMORIES_TABLE)) state.tables.add(MEMORIES_TABLE)
             if (statement.includes(SAVE_OPERATIONS_TABLE)) state.tables.add(SAVE_OPERATIONS_TABLE)
+            if (statement.includes(DELETION_OPERATIONS_TABLE)) state.tables.add(DELETION_OPERATIONS_TABLE)
           }
         },
         async run(sql: string, params: readonly unknown[] = []) {
@@ -150,12 +182,39 @@ function fakeClient() {
             }
             return
           }
+          if (sql.includes(`INSERT INTO ${DELETION_OPERATIONS_TABLE}`)) {
+            if (state.transactionFailure) throw state.transactionFailure
+            const [memory_id, relative_path, phase] = params
+            state.deletions.push({
+              memory_id: String(memory_id),
+              relative_path: relative_path as string | null,
+              phase: phase as DeletionOperationRow['phase'],
+            })
+            return
+          }
+          if (sql.includes(`UPDATE ${DELETION_OPERATIONS_TABLE}`)) {
+            if (state.transactionFailure) throw state.transactionFailure
+            const [phase, memoryId] = params
+            const entry = state.deletions.find((row) => row.memory_id === memoryId)
+            if (entry) entry.phase = phase as DeletionOperationRow['phase']
+            return
+          }
+          if (sql.includes(`DELETE FROM ${DELETION_OPERATIONS_TABLE}`)) {
+            if (state.transactionFailure) throw state.transactionFailure
+            state.deletions = state.deletions.filter((entry) => entry.memory_id !== params[0])
+            return
+          }
           if (sql.includes(`DELETE FROM ${SAVE_OPERATIONS_TABLE}`)) {
+            if (sql.includes('memory_id')) {
+              state.operations = state.operations.filter((entry) => entry.memory_id !== params[0])
+              return
+            }
             const operationId = params[0]
             state.operations = state.operations.filter((entry) => entry.operation_id !== operationId)
             return
           }
           if (sql.includes('DELETE FROM memories')) {
+            if (state.transactionFailure) throw state.transactionFailure
             const memoryId = String(params[0])
             state.memories = state.memories.filter((entry) => entry.id !== memoryId)
             return
@@ -197,6 +256,11 @@ function fakeClient() {
           throw new Error(`Unexpected txn statement: ${sql}`)
         },
         async getAll<T2>(sql: string, params: readonly unknown[] = []) {
+          if (sql.includes(`FROM ${DELETION_OPERATIONS_TABLE}`)) {
+            return state.deletions
+              .filter((entry) => entry.memory_id === params[0])
+              .map((entry) => ({ ...entry })) as T2[]
+          }
           if (sql.includes(`FROM ${SAVE_OPERATIONS_TABLE}`)) {
             return state.operations.filter((operation) =>
               operation.operation_id === params[0]
@@ -204,6 +268,9 @@ function fakeClient() {
                 || operation.memory_id === params[0]
                 || operation.memory_id === params[1],
             ).map((operation) => ({ ...operation })) as T2[]
+          }
+          if (sql.includes('FROM memories') && sql.includes('WHERE id = ?')) {
+            return state.memories.filter((m) => m.id === params[0]).map((m) => ({ ...m })) as T2[]
           }
           if (sql.includes('WHERE id = ?')) {
             return state.memories.filter((m) => m.id === params[0]).map((m) => ({ id: m.id })) as T2[]
@@ -224,6 +291,7 @@ function fakeClient() {
         if (!blockCompleted) {
           state.memories = memoriesBefore
           state.operations = operationsBefore
+          state.deletions = deletionsBefore
           state.tables = tablesBefore
         }
         throw error
@@ -454,6 +522,81 @@ describe('createSqliteMemoryRepository', () => {
     expect(await repo.findAllWithMedia()).toEqual([voiceMemory])
   })
 
+  it('marks a memory deleting so it disappears from the timeline before rows are removed', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    await repo.create(memory)
+    await repo.create(voiceMemory)
+
+    const marked = await repo.markDeleting(voiceMemory.id)
+
+    expect(marked).toMatchObject({
+      memoryId: voiceMemory.id,
+      relativePath: 'media/memory-voice-1.m4a',
+      phase: 'marked',
+    })
+    expect((await repo.findNewestFirst()).map((entry) => entry.id)).toEqual([memory.id])
+    expect(state.memories.map((row) => row.id)).toEqual([memory.id, voiceMemory.id])
+  })
+
+  it('rolls back a failed mark so the memory stays visible', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    await repo.create(voiceMemory)
+    state.transactionFailure = new Error('disk is full')
+
+    await expect(repo.markDeleting(voiceMemory.id)).rejects.toEqual(
+      new StorageGateError('deletion-incomplete'),
+    )
+    expect(state.deletions).toEqual([])
+    expect((await repo.findNewestFirst()).map((entry) => entry.id)).toEqual([voiceMemory.id])
+  })
+
+  it('deletes catalog and save-journal rows, checkpoints WAL, then verifies absence', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    await repo.create(voiceMemory)
+    await repo.markDeleting(voiceMemory.id)
+
+    await repo.removeRows(voiceMemory.id)
+    await repo.checkpoint()
+
+    expect(state.memories).toEqual([])
+    expect(await repo.verifyAbsent(voiceMemory.id)).toBe(true)
+    expect(state.checkpoints).toBe(1)
+    expect(state.deletions).toHaveLength(1)
+
+    await repo.clear(voiceMemory.id)
+    expect(state.deletions).toEqual([])
+  })
+
+  it('does not remove rows when the delete transaction fails', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    await repo.create(voiceMemory)
+    await repo.markDeleting(voiceMemory.id)
+    state.transactionFailure = new Error('delete failed')
+
+    await expect(repo.removeRows(voiceMemory.id)).rejects.toEqual(
+      new StorageGateError('deletion-incomplete'),
+    )
+    expect(state.memories.map((row) => row.id)).toEqual([voiceMemory.id])
+  })
+
+  it('reports a failed WAL checkpoint as an incomplete deletion', async () => {
+    const { client, state } = fakeClient()
+    await client.open()
+    const repo = createSqliteMemoryRepository(client)
+    state.checkpointFailure = new Error('checkpoint failed')
+
+    await expect(repo.checkpoint()).rejects.toEqual(new StorageGateError('deletion-incomplete'))
+    expect(state.checkpoints).toBe(0)
+  })
+
   it('hard-deletes a catalog row by identity and reports missing afterward', async () => {
     const { client, state } = fakeClient()
     await client.open()
@@ -477,6 +620,7 @@ describe('createSqliteMemoryRepository', () => {
 
     expect(state.tables.has(PROFILES_TABLE)).toBe(true)
     expect(state.tables.has(MEMORIES_TABLE)).toBe(true)
+    expect(state.tables.has(DELETION_OPERATIONS_TABLE)).toBe(true)
   })
 
   it('refuses to run multi-statement DDL through run (single-statement API)', async () => {

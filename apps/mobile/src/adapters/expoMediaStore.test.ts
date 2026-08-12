@@ -10,7 +10,7 @@ import {
   StorageGateError,
   resumeFilesystemMigration,
 } from '@before-they-grow/application'
-import { createExpoMediaStorePort, layoutMigrationJournalName } from './expoMediaStore'
+import { createExpoMediaStorePort, familyWipeMarkerName, layoutMigrationJournalName } from './expoMediaStore'
 import type { BackupExclusionPort } from './backupExclusion'
 
 function exclusion(): BackupExclusionPort & { allowed: boolean; applied: string[] } {
@@ -224,5 +224,38 @@ describe('createExpoMediaStorePort', () => {
     expect(health).toBe('checksum-mismatch')
     expect(final.exists).toBe(true)
     await store.removeFinal('media/play.m4a')
+  })
+
+  it('wipes family catalog and media, keeps the marker, and leaves unrelated files alone', async () => {
+    const store = createExpoMediaStorePort(exclusion())
+    await store.verifyRoots()
+    const source = cacheFile('wipe-me.m4a')
+    await store.commit(source.uri, 'media/wipe-me.m4a')
+    const catalog = new File('file:///mock/private/BeforeTheyGrow/layout-v1/profile-v1.db')
+    catalog.create({ intermediates: true })
+    catalog.write('sqlite')
+    const staging = new File('file:///mock/private/BeforeTheyGrow/layout-v1/media/.staging-op1')
+    staging.create({ intermediates: true })
+    staging.write('tmp')
+    const unrelated = new File('file:///mock/private/other-app.txt')
+    unrelated.create({ intermediates: true })
+    unrelated.write('keep-me')
+
+    await store.writeMarker()
+    const marker = new File(`file:///mock/private/BeforeTheyGrow/${familyWipeMarkerName}`)
+    expect(await marker.text()).toBe('{"k":"wipe"}')
+
+    await store.wipeFamilyContent()
+
+    expect(new File('file:///mock/private/BeforeTheyGrow/layout-v1/media/wipe-me.m4a').exists).toBe(false)
+    expect(catalog.exists).toBe(false)
+    expect(staging.exists).toBe(false)
+    expect(marker.exists).toBe(true)
+    expect(unrelated.exists).toBe(true)
+    expect(await store.verifyWiped()).toBe(true)
+
+    await store.clearMarker()
+    expect(marker.exists).toBe(false)
+    await unrelated.delete()
   })
 })

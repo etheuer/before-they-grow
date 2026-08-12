@@ -11,6 +11,7 @@ import type { NativeProfileV1 } from '@before-they-grow/contracts'
 import type { BackupExclusionPort } from './backupExclusion'
 import {
   DATABASE_DDL_V2,
+  DELETION_OPERATIONS_TABLE,
   MEMORIES_TABLE,
   MIGRATION_MEMORIES_V1_TO_V2,
   PROFILES_TABLE,
@@ -153,7 +154,8 @@ export function createSqliteProfileRepository(
       if (!hasProfiles) throw new StorageGateError('version-unsafe')
       const hasMemories = await client.tableExists(MEMORIES_TABLE)
       const hasSaveOperations = await client.tableExists(SAVE_OPERATIONS_TABLE)
-      if (!hasMemories || !hasSaveOperations) {
+      const hasDeletionOperations = await client.tableExists(DELETION_OPERATIONS_TABLE)
+      if (!hasMemories || !hasSaveOperations || !hasDeletionOperations) {
         // Additive, idempotent repair for a versioned catalog that somehow
         // lost a reliability table; nothing existing is touched.
         await applySchemaInTransaction(DATABASE_DDL_V2)
@@ -162,7 +164,8 @@ export function createSqliteProfileRepository(
     const profilesTable = await client.tableExists(PROFILES_TABLE)
     const memoriesTable = await client.tableExists(MEMORIES_TABLE)
     const saveOperationsTable = await client.tableExists(SAVE_OPERATIONS_TABLE)
-    if (!profilesTable || !memoriesTable || !saveOperationsTable) {
+    const deletionOperationsTable = await client.tableExists(DELETION_OPERATIONS_TABLE)
+    if (!profilesTable || !memoriesTable || !saveOperationsTable || !deletionOperationsTable) {
       throw new StorageGateError('version-unsafe')
     }
   }

@@ -1,6 +1,4 @@
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
-import type { MediaStorePort } from './capture'
-import type { MemoryRepositoryPort } from './memory'
 import { StorageGateError, type StorageBlockReason } from './profile'
 
 export type UnavailableReason = 'missing-file' | 'wrong-size' | 'checksum-mismatch'
@@ -131,29 +129,12 @@ export function referencedMediaFrom(memories: readonly MemoryEntryV1[]): Referen
   return referenced
 }
 
-export async function hardDeleteMemory(
-  deps: {
-    repository: MemoryRepositoryPort
-    mediaStore?: Pick<MediaStorePort, 'removeFinal'>
-  },
-  id: string,
-): Promise<'deleted' | 'missing'> {
-  const existing = deps.repository.findById
-    ? await deps.repository.findById(id)
-    : (await deps.repository.findNewestFirst()).find((memory) => memory.id === id) ?? null
-  if (!existing) return 'missing'
-
-  const outcome = await deps.repository.remove(id)
-  if (outcome === 'missing') return 'missing'
-  if (existing.media && deps.mediaStore) {
-    try {
-      await deps.mediaStore.removeFinal(existing.media.relativePath)
-    } catch {
-      // The catalog row is gone; bootstrap orphan cleanup will retry the file.
-    }
-  }
-  return 'deleted'
-}
+export {
+  deleteAllFamilyContent,
+  hardDeleteMemory,
+  resumeFamilyWipe,
+  resumeIndividualDeletions,
+} from './hardDelete'
 
 export type LayoutMigrationPhase = 'prepared' | 'copied' | 'validated' | 'switched'
 

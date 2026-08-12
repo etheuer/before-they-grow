@@ -34,7 +34,6 @@ export {
   classifyLayoutVersions,
   classifyMediaHealth,
   classifyStorageInventory,
-  hardDeleteMemory,
   referencedMediaFrom,
   resumeFilesystemMigration,
   type FilesystemEntry,
@@ -49,6 +48,17 @@ export {
   type UnavailableMemory,
   type UnavailableReason,
 } from './storageBoot'
+export {
+  deleteAllFamilyContent,
+  hardDeleteMemory,
+  resumeFamilyWipe,
+  resumeIndividualDeletions,
+  type FamilyWipePort,
+  type HardDeleteMemoryDeps,
+  type IndividualDeletionPhase,
+  type IndividualDeletionPort,
+  type IndividualDeletionRecord,
+} from './hardDelete'
 export {
   SaveBoundaryError,
   SaveCapacityError,

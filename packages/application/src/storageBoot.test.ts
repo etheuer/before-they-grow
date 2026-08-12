@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import { StorageGateError } from './profile'
-import type { MemoryRepositoryPort } from './memory'
-import type { MediaStorePort } from './capture'
 import {
   classifyLayoutVersions,
   classifyMediaHealth,
   classifyStorageInventory,
-  hardDeleteMemory,
   resumeFilesystemMigration,
   type FilesystemEntry,
   type LayoutMigrationPort,
@@ -141,95 +137,6 @@ describe('classifyMediaHealth', () => {
       actualSha256: 'deadbeef',
       expectedSha256: 'deadbeef',
     })).toBe('ok')
-  })
-})
-
-const voice: MemoryEntryV1 = {
-  id: 'memory-voice-1',
-  kind: 'voice',
-  promptSnapshot: {
-    promptId: '6-8-memory-proud',
-    question: 'What happened today that made you feel proud?',
-    followUp: 'What did you do to make it happen?',
-    ageBand: '6-8',
-  },
-  reviewedTranscript: 'I made my bed.',
-  capturedAt: '2026-08-11T22:05:00.000Z',
-  savedAt: '2026-08-11T22:05:00.000Z',
-  localDate: '2026-08-11',
-  timeZone: 'UTC',
-  media: {
-    relativePath: 'media/memory-voice-1.m4a',
-    byteCount: 1000,
-    sha256: 'deadbeef',
-  },
-}
-
-function repository(initial: MemoryEntryV1[] = []): MemoryRepositoryPort & { memories: MemoryEntryV1[] } {
-  const state: MemoryRepositoryPort & { memories: MemoryEntryV1[] } = {
-    memories: [...initial],
-    async create(memory) {
-      if (state.memories.some((entry) => entry.id === memory.id)) return 'duplicate'
-      state.memories.push(memory)
-      return 'created'
-    },
-    async updateReviewedTranscript(id, reviewedTranscript) {
-      const memory = state.memories.find((entry) => entry.id === id)
-      if (!memory) return 'missing'
-      memory.reviewedTranscript = reviewedTranscript
-      return 'updated'
-    },
-    async findNewestFirst() {
-      return [...state.memories]
-    },
-    async findAllWithMedia() {
-      return state.memories.filter((entry) => entry.media !== null)
-    },
-    async findById(id) {
-      return state.memories.find((entry) => entry.id === id) ?? null
-    },
-    async remove(id) {
-      const before = state.memories.length
-      state.memories = state.memories.filter((entry) => entry.id !== id)
-      return state.memories.length === before ? 'missing' : 'removed'
-    },
-  }
-  return state
-}
-
-function media(): MediaStorePort & { removed: string[] } {
-  const state: MediaStorePort & { removed: string[] } = {
-    removed: [],
-    async commit() {},
-    async reconcileFinal() {
-      return true
-    },
-    async removeFinal(relativePath) {
-      state.removed.push(relativePath)
-    },
-    async resolve(relativePath) {
-      return `file:///documents/${relativePath}`
-    },
-  }
-  return state
-}
-
-describe('hardDeleteMemory', () => {
-  it('removes the catalog row and its referenced file, leaving other memories', () => {
-    const other: MemoryEntryV1 = { ...voice, id: 'keep', media: null, kind: 'text-only', reviewedTranscript: 'kept' }
-    const repo = repository([voice, other])
-    const store = media()
-
-    return hardDeleteMemory({ repository: repo, mediaStore: store }, voice.id).then((result) => {
-      expect(result).toBe('deleted')
-      expect(repo.memories.map((entry) => entry.id)).toEqual(['keep'])
-      expect(store.removed).toEqual(['media/memory-voice-1.m4a'])
-    })
-  })
-
-  it('reports missing when the memory is already gone', async () => {
-    const repo = repository()
-    expect(await hardDeleteMemory({ repository: repo, mediaStore: media() }, 'gone')).toBe('missing')
   })
 })
 

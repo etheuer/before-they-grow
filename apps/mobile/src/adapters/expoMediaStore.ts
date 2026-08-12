@@ -19,6 +19,7 @@ import type { BackupExclusionPort } from './backupExclusion'
 import { familyStorageDirectoryName, storageLayoutVersion } from './storageRoot'
 
 export const layoutMigrationJournalName = 'layout-migration.journal'
+export const familyWipeMarkerName = 'wipe.marker'
 
 const RECOGNIZED_FINAL = /^[A-Za-z0-9_-]+\.m4a$/
 const RECOGNIZED_STAGING = /^\.staging-[A-Za-z0-9._-]+$/
@@ -35,6 +36,11 @@ export type FamilyMediaStore = MediaStorePort & StorageInventoryPort & LayoutMig
     relativePath: string,
     expected: { byteCount: number; sha256: string },
   ): Promise<'ok' | UnavailableReason>
+  markerPresent(): Promise<boolean>
+  writeMarker(): Promise<void>
+  clearMarker(): Promise<void>
+  wipeFamilyContent(): Promise<void>
+  verifyWiped(): Promise<boolean>
 }
 
 function toHex(buffer: ArrayBuffer): string {
@@ -61,6 +67,14 @@ function mediaRoot(version: number = storageLayoutVersion): Directory {
 
 function journalFile(): File {
   return new File(familyRoot(), layoutMigrationJournalName)
+}
+
+function wipeMarkerFile(): File {
+  return new File(familyRoot(), familyWipeMarkerName)
+}
+
+function isRecognizedFamilyFile(name: string): boolean {
+  return name === layoutMigrationJournalName || name === familyWipeMarkerName
 }
 
 function classifyMediaName(name: string): FilesystemEntryKind | null {
@@ -108,7 +122,7 @@ export function createExpoMediaStorePort(exclusion: BackupExclusionPort): Family
         continue
       }
       if (entry instanceof File) {
-        if (entry.name === layoutMigrationJournalName) {
+        if (isRecognizedFamilyFile(entry.name)) {
           entries.push({
             relativePath: entry.name,
             byteCount: entry.size ?? 0,
@@ -241,7 +255,7 @@ export function createExpoMediaStorePort(exclusion: BackupExclusionPort): Family
         }
         for (const entry of family.list()) {
           if (entry instanceof Directory && LAYOUT_DIRECTORY.test(entry.name)) continue
-          if (entry instanceof File && entry.name === layoutMigrationJournalName) continue
+          if (entry instanceof File && isRecognizedFamilyFile(entry.name)) continue
           throw new StorageGateError('root-unsafe')
         }
       }
@@ -394,6 +408,41 @@ export function createExpoMediaStorePort(exclusion: BackupExclusionPort): Family
       if (sourceLayout === storageLayoutVersion) return
       const source = layoutRoot(sourceLayout)
       if (source.exists) await source.delete()
+    },
+
+    async markerPresent() {
+      return wipeMarkerFile().exists
+    },
+
+    async writeMarker() {
+      const family = familyRoot()
+      family.create({ idempotent: true, intermediates: true })
+      // Opaque, non-family-bearing flag only — no names, transcripts, or paths.
+      wipeMarkerFile().write('{"k":"wipe"}')
+    },
+
+    async clearMarker() {
+      const file = wipeMarkerFile()
+      if (file.exists) await file.delete()
+    },
+
+    async wipeFamilyContent() {
+      const family = familyRoot()
+      if (!family.exists) return
+      for (const entry of family.list()) {
+        if (entry instanceof File && entry.name === familyWipeMarkerName) continue
+        if (entry.exists) await entry.delete()
+      }
+    },
+
+    async verifyWiped() {
+      const family = familyRoot()
+      if (!family.exists) return true
+      for (const entry of family.list()) {
+        if (entry instanceof File && entry.name === familyWipeMarkerName) continue
+        return false
+      }
+      return true
     },
   }
 }

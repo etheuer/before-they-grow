@@ -46,6 +46,8 @@ const BLOCKED_COPY: Record<StorageBlockReason, string> = {
     'We could not confirm your memories stay out of cloud backup.',
   'save-indeterminate':
     'A recent save could not be confirmed yet. We are checking it before showing your memories.',
+  'deletion-incomplete':
+    'A Hard local deletion did not finish. Nothing else will be shown until it can be completed. There is no restore.',
 }
 
 type BootState =
@@ -185,18 +187,39 @@ function HomeShell({
   }
 
   const hardDelete = async (memory: MemoryEntryV1) => {
-    const outcome = await services.hardDeleteMemory(memory.id)
-    if (outcome === 'deleted') {
-      setMemories((current) => current.filter((entry) => entry.id !== memory.id))
-      setUnavailable((current) => {
-        const next = { ...current }
-        delete next[memory.id]
-        return next
-      })
-      if (playingId === memory.id) {
-        await services.stopPlayback()
-        setPlayingId(null)
+    try {
+      const outcome = await services.hardDeleteMemory(memory.id)
+      if (outcome === 'deleted') {
+        setMemories((current) => current.filter((entry) => entry.id !== memory.id))
+        setUnavailable((current) => {
+          const next = { ...current }
+          delete next[memory.id]
+          return next
+        })
+        if (playingId === memory.id) {
+          await services.stopPlayback()
+          setPlayingId(null)
+        }
       }
+    } catch (error) {
+      if (error instanceof StorageGateError) {
+        onStorageBlocked()
+        return
+      }
+      throw error
+    }
+  }
+
+  const deleteAllFamilyContent = async () => {
+    try {
+      await services.deleteAllFamilyContent()
+      onStorageBlocked()
+    } catch (error) {
+      if (error instanceof StorageGateError) {
+        onStorageBlocked()
+        return
+      }
+      throw error
     }
   }
 
@@ -229,6 +252,7 @@ function HomeShell({
         unavailable={unavailable}
         onTogglePlay={(memory) => void togglePlay(memory)}
         onHardDelete={(memory) => void hardDelete(memory)}
+        onDeleteAll={() => void deleteAllFamilyContent()}
         onBack={() => setScreen('tonight')}
         onAnswerTonight={() => setScreen('tonight')}
         onRetry={() => refreshTimeline()}

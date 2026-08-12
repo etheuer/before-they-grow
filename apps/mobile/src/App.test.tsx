@@ -1,18 +1,19 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
-import type {
-  ApplicationLifecyclePort,
-  ApplicationLifecycleState,
-  AuthenticationPort,
-  AuthenticationResult,
-  CredentialAvailability,
-  CreateProfileInput,
-  CreateProfileResult,
-  ProtectedHomeState,
-  TranscriptionOutcome,
-  UnavailableMemory,
-  ValidateCapturedAudioResult,
-  ValidatedAudio,
+import {
+  StorageGateError,
+  type ApplicationLifecyclePort,
+  type ApplicationLifecycleState,
+  type AuthenticationPort,
+  type AuthenticationResult,
+  type CredentialAvailability,
+  type CreateProfileInput,
+  type CreateProfileResult,
+  type ProtectedHomeState,
+  type TranscriptionOutcome,
+  type UnavailableMemory,
+  type ValidateCapturedAudioResult,
+  type ValidatedAudio,
 } from '@before-they-grow/application'
 import type { MemoryEntryV1 } from '@before-they-grow/contracts'
 import type { ProtectedAreaServices } from './services'
@@ -69,6 +70,8 @@ function fakeProtectedArea(options: {
   initialUnsaved?: { audio: ValidatedAudio; reviewedText: string }
   unavailable?: UnavailableMemory[]
   playOutcome?: 'played' | 'unavailable'
+  wipeMarker?: boolean
+  deleteAllFails?: boolean
 } = {}): ProtectedAreaServices & {
   creates: CreateProfileInput[]
   bootstrapCalls: number
@@ -76,6 +79,7 @@ function fakeProtectedArea(options: {
   savedVoice: Array<{ reviewedTranscript: string; validatedMediaUri: string }>
   played: string[]
   hardDeletes: string[]
+  deleteAllCalls: number
   resolveTranscription: ((outcome: TranscriptionOutcome) => void) | null
 } {
   const state = {
@@ -86,6 +90,9 @@ function fakeProtectedArea(options: {
     savedVoice: [] as Array<{ reviewedTranscript: string; validatedMediaUri: string }>,
     played: [] as string[],
     hardDeletes: [] as string[],
+    deleteAllCalls: 0,
+    wiped: options.wipeMarker === true,
+    deleteAllFailed: false,
     memories: [...(options.memories ?? [])],
     timelineLoads: 0,
     transcribeResolvers: [] as Array<(outcome: TranscriptionOutcome) => void>,
@@ -98,6 +105,7 @@ function fakeProtectedArea(options: {
     savedVoice: Array<{ reviewedTranscript: string; validatedMediaUri: string }>
     played: string[]
     hardDeletes: string[]
+    deleteAllCalls: number
     resolveTranscription: ((outcome: TranscriptionOutcome) => void) | null
   } = {
     creates: state.creates,
@@ -106,6 +114,9 @@ function fakeProtectedArea(options: {
     played: state.played,
     get hardDeletes() {
       return state.hardDeletes
+    },
+    get deleteAllCalls() {
+      return state.deleteAllCalls
     },
     get bootstrapCalls() {
       return state.bootstrapCalls
@@ -120,6 +131,12 @@ function fakeProtectedArea(options: {
       state.bootstrapCalls += 1
       if (state.bootstrapCalls <= (options.bootstrapFailures ?? 0)) {
         throw new Error('unexpected bootstrap failure')
+      }
+      if (state.deleteAllFailed) {
+        return { kind: 'storage-blocked', reason: 'deletion-incomplete' }
+      }
+      if (state.wiped) {
+        return { kind: 'needs-onboarding' }
       }
       if (state.creates.length > 0 && options.homeAfterCreate) {
         return { ...options.homeAfterCreate, unavailable: options.unavailable ?? [] }
@@ -172,6 +189,16 @@ function fakeProtectedArea(options: {
       const before = state.memories.length
       state.memories = state.memories.filter((entry) => entry.id !== id)
       return state.memories.length === before ? 'missing' : 'deleted'
+    },
+    async deleteAllFamilyContent() {
+      state.deleteAllCalls += 1
+      if (options.deleteAllFails) {
+        state.deleteAllFailed = true
+        throw new StorageGateError('deletion-incomplete')
+      }
+      state.wiped = true
+      state.memories = []
+      return 'deleted'
     },
     async loadMemoryTimeline() {
       if ((options.timelineFailures ?? 0) > state.timelineLoads) {
@@ -869,7 +896,7 @@ describe('protected area', () => {
     expect(screen.queryByRole('button', { name: 'Play this memory' })).toBeNull()
 
     await fireEvent.press(screen.getByRole('button', { name: 'Remove this memory' }))
-    await fireEvent.press(screen.getByRole('button', { name: 'Remove permanently' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Delete permanently' }))
 
     expect(await screen.findByText('No memories yet')).toBeOnTheScreen()
     expect(area.hardDeletes).toEqual(['v-missing'])
@@ -898,6 +925,78 @@ describe('protected area', () => {
     expect(screen.queryByRole('button', { name: 'Play this memory' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Remove this memory' })).toBeOnTheScreen()
     expect(area.played).toEqual([])
+  })
+
+  it('requires confirmation that names the memory and explains Hard local deletion before removing it', async () => {
+    const saved = memoryEntry('keep-me', '2026-08-11', 'I made my bed.')
+    const area = fakeProtectedArea({ initial: homeWithProfile, memories: [saved] })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await fireEvent.press(await screen.findByRole('button', { name: 'View 1 memory' }))
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Remove this memory' }))
+    expect(area.hardDeletes).toEqual([])
+    expect(
+      screen.getByText(/Hard local deletion of “I made my bed.” from August 11, 2026/),
+    ).toBeOnTheScreen()
+    expect(screen.getByText(/This permanently removes it from this phone/)).toBeOnTheScreen()
+    expect(screen.getByText(/not forensic erasure of the device storage/)).toBeOnTheScreen()
+    expect(screen.queryByRole('button', { name: /restore/i })).toBeNull()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Delete permanently' }))
+    expect(area.hardDeletes).toEqual(['keep-me'])
+    expect(await screen.findByText('No memories yet')).toBeOnTheScreen()
+  })
+
+  it('requires two confirmations naming profile, transcripts, and recordings before delete everything', async () => {
+    const saved = memoryEntry('keep-me', '2026-08-11', 'I made my bed.')
+    const area = fakeProtectedArea({ initial: homeWithProfile, memories: [saved] })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await fireEvent.press(await screen.findByRole('button', { name: 'View 1 memory' }))
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Delete everything' }))
+    expect(area.deleteAllCalls).toBe(0)
+    expect(screen.getByText(/Mila's profile, every transcript, and every recording/)).toBeOnTheScreen()
+    expect(screen.getByText(/not in the cloud and cannot be recovered/)).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole('button', { name: 'I understand — continue' }))
+    expect(area.deleteAllCalls).toBe(0)
+    await fireEvent.press(screen.getByRole('button', { name: 'Yes, delete everything' }))
+
+    expect(area.deleteAllCalls).toBe(1)
+    expect(await screen.findByText('Set up your family space')).toBeOnTheScreen()
+    expect(screen.queryByText('I made my bed.')).toBeNull()
+  })
+
+  it('finishes a wipe-marker relaunch as an empty store without exposing memories', async () => {
+    const leftover = memoryEntry('partial', '2026-08-11', 'should not appear')
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      memories: [leftover],
+      wipeMarker: true,
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+
+    expect(await screen.findByText('Set up your family space')).toBeOnTheScreen()
+    expect(screen.queryByText('should not appear')).toBeNull()
+    expect(screen.queryByText("Mila's memories")).toBeNull()
+  })
+
+  it('blocks the family area when delete everything cannot finish', async () => {
+    const saved = memoryEntry('keep-me', '2026-08-11', 'I made my bed.')
+    const area = fakeProtectedArea({
+      initial: homeWithProfile,
+      memories: [saved],
+      deleteAllFails: true,
+    })
+    await renderShell(fakeAuthentication('available', ['authenticated']), area)
+    await fireEvent.press(await screen.findByRole('button', { name: 'View 1 memory' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Delete everything' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'I understand — continue' }))
+    await fireEvent.press(screen.getByRole('button', { name: 'Yes, delete everything' }))
+
+    expect(await screen.findByText('Family storage is unavailable')).toBeOnTheScreen()
+    expect(screen.getByText(/Hard local deletion did not finish/)).toBeOnTheScreen()
+    expect(screen.queryByRole('button', { name: /restore/i })).toBeNull()
   })
 
   it('shows an unexpected bootstrap failure as a blocked state and recovers on retry', async () => {

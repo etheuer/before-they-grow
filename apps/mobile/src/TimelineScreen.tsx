@@ -7,6 +7,11 @@ import { ActionButton } from './components/ActionButton'
 import { formatDisplayDate } from './format'
 import type { Theme } from './theme'
 
+function memoryLabel(memory: MemoryEntryV1): string {
+  const spoken = memory.reviewedTranscript.trim()
+  return spoken.length > 0 ? spoken : memory.promptSnapshot.question
+}
+
 function MemoryRow({
   memory,
   playing,
@@ -70,24 +75,38 @@ function MemoryRow({
           “{memory.reviewedTranscript}”
         </Text>
       )}
-      {unavailable ? (
-        <View style={styles.deleteAction}>
-          {confirmingDelete ? (
+      <View style={styles.deleteAction}>
+        {confirmingDelete ? (
+          <>
+            <Text style={[styles.confirmCopy, { color: theme.text }]}>
+              Hard local deletion of “{memoryLabel(memory)}” from{' '}
+              {formatDisplayDate(memory.localDate)}. This permanently removes it from this
+              phone. It cannot be undone or recovered. This is not forensic erasure of the
+              device storage.
+            </Text>
             <ActionButton
-              label="Remove permanently"
+              label="Delete permanently"
               onPress={onHardDelete}
               theme={theme}
             />
-          ) : (
-            <ActionButton
-              label="Remove this memory"
-              variant="secondary"
-              onPress={() => setConfirmingDelete(true)}
-              theme={theme}
-            />
-          )}
-        </View>
-      ) : null}
+            <View style={styles.confirmSpacer}>
+              <ActionButton
+                label="Keep this memory"
+                variant="secondary"
+                onPress={() => setConfirmingDelete(false)}
+                theme={theme}
+              />
+            </View>
+          </>
+        ) : (
+          <ActionButton
+            label="Remove this memory"
+            variant="secondary"
+            onPress={() => setConfirmingDelete(true)}
+            theme={theme}
+          />
+        )}
+      </View>
     </View>
   )
 }
@@ -99,6 +118,7 @@ export function TimelineScreen({
   unavailable,
   onTogglePlay,
   onHardDelete,
+  onDeleteAll,
   onBack,
   onAnswerTonight,
   onRetry,
@@ -111,12 +131,14 @@ export function TimelineScreen({
   unavailable: Record<string, UnavailableReason>
   onTogglePlay: (memory: MemoryEntryV1) => void
   onHardDelete: (memory: MemoryEntryV1) => void
+  onDeleteAll: () => void
   onBack: () => void
   onAnswerTonight: () => void
   onRetry: () => void
   loadFailed: boolean
   theme: Theme
 }) {
+  const [deleteAllStep, setDeleteAllStep] = useState<0 | 1 | 2>(0)
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
       <ScrollView
@@ -185,6 +207,73 @@ export function TimelineScreen({
               ))}
             </View>
           )}
+
+          <View style={[styles.dangerCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <Text accessibilityRole="header" style={[styles.emptyTitle, { color: theme.text }]}>
+              Hard local deletion
+            </Text>
+            {deleteAllStep === 0 ? (
+              <>
+                <Text style={[styles.emptyBody, { color: theme.muted }]}>
+                  Permanently remove {childNickname}'s profile, every transcript, and every
+                  recording from this phone. This cannot be undone or recovered.
+                </Text>
+                <View style={styles.emptyAction}>
+                  <ActionButton
+                    label="Delete everything"
+                    variant="secondary"
+                    onPress={() => setDeleteAllStep(1)}
+                    theme={theme}
+                  />
+                </View>
+              </>
+            ) : deleteAllStep === 1 ? (
+              <>
+                <Text style={[styles.emptyBody, { color: theme.text }]}>
+                  This Hard local deletion permanently removes {childNickname}'s profile, every
+                  transcript, and every recording from this phone. They are not in the cloud and
+                  cannot be recovered. This is not forensic erasure of the device storage.
+                </Text>
+                <View style={styles.emptyAction}>
+                  <ActionButton
+                    label="I understand — continue"
+                    onPress={() => setDeleteAllStep(2)}
+                    theme={theme}
+                  />
+                </View>
+                <View style={styles.confirmSpacer}>
+                  <ActionButton
+                    label="Keep family content"
+                    variant="secondary"
+                    onPress={() => setDeleteAllStep(0)}
+                    theme={theme}
+                  />
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={[styles.emptyBody, { color: theme.text }]}>
+                  Last chance. {childNickname}'s profile, transcripts, and recordings will be
+                  permanently removed from this phone only.
+                </Text>
+                <View style={styles.emptyAction}>
+                  <ActionButton
+                    label="Yes, delete everything"
+                    onPress={onDeleteAll}
+                    theme={theme}
+                  />
+                </View>
+                <View style={styles.confirmSpacer}>
+                  <ActionButton
+                    label="Keep family content"
+                    variant="secondary"
+                    onPress={() => setDeleteAllStep(0)}
+                    theme={theme}
+                  />
+                </View>
+              </>
+            )}
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -227,4 +316,7 @@ const styles = StyleSheet.create({
   emptyBody: { fontSize: 15, lineHeight: 22, marginTop: 8 },
   emptyAction: { marginTop: 20 },
   deleteAction: { marginTop: 16 },
+  confirmCopy: { fontSize: 15, lineHeight: 22, marginBottom: 14 },
+  confirmSpacer: { marginTop: 10 },
+  dangerCard: { borderRadius: 16, borderWidth: 1, marginTop: 28, padding: 20 },
 })

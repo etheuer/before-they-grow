@@ -2,12 +2,16 @@ import { Platform } from 'react-native'
 import * as Crypto from 'expo-crypto'
 import {
   createProfile,
+  deleteAllFamilyContent as wipeAllFamilyContent,
   finalizeVoiceCapture,
   hardDeleteMemory as deleteLocalMemory,
   loadMemoryTimeline,
   loadProtectedHomeState,
   reconcileSaveOperations,
+  resumeFamilyWipe,
   resumeFilesystemMigration,
+  resumeIndividualDeletions,
+  type IndividualDeletionPort,
   SaveReconciliationError,
   saveManualMemory,
   saveVoiceMemory,
@@ -45,6 +49,7 @@ import {
 import { createAndroidBackupExclusion, createIosBackupExclusion, type BackupExclusionPort } from './adapters/backupExclusion'
 import { createExpoRecordingPermissionPort } from './adapters/expoRecordingPermission'
 import { createExpoSqliteProfileClient } from './adapters/expoSqliteClient'
+import { createFamilyWipePort } from './adapters/familyWipe'
 import { createSqliteMemoryRepository } from './adapters/sqliteMemoryRepository'
 import { createSqliteProfileRepository } from './adapters/sqliteProfileRepository'
 import { createExpoAudioRecorderPort } from './adapters/expoAudioRecorder'
@@ -77,6 +82,8 @@ export type ProtectedAreaServices = {
   loadMemoryTimeline(): Promise<MemoryEntryV1[]>
   /** Irreversible removal of one Local-only memory. */
   hardDeleteMemory(id: string): Promise<'deleted' | 'missing'>
+  /** Irreversible Hard local deletion of the profile and every memory. */
+  deleteAllFamilyContent(): Promise<'deleted'>
   /** Takes and clears save results reconciled during the last bootstrap. */
   consumeSaveReconciliationNotice(): SaveReconciliationResult[]
   // --- in-process Unsaved recording (survives the App-lock transition) ---
@@ -110,7 +117,7 @@ export type ProtectedAreaServices = {
 
 type RepositorySet = {
   profile: ProfileRepositoryPort & { consumeUnavailable?: () => UnavailableMemory[] }
-  memory: MemoryRepositoryPort
+  memory: MemoryRepositoryPort & IndividualDeletionPort
 }
 
 /**
@@ -130,6 +137,19 @@ export function createProtectedAreaServices(
   const exclusion: BackupExclusionPort =
     Platform.OS === 'ios' ? createIosBackupExclusion() : createAndroidBackupExclusion()
   const mediaStore = createExpoMediaStorePort(exclusion)
+
+  const closeCatalog = async () => {
+    if (repositorySet) {
+      await repositorySet.profile.close()
+    }
+    repositorySet = null
+    opening = null
+  }
+
+  const wipe = createFamilyWipePort({
+    closeCatalog,
+    store: mediaStore,
+  })
 
   const getRepositorySet = (): Promise<RepositorySet> => {
     if (repositorySet) return Promise.resolve(repositorySet)
@@ -189,9 +209,19 @@ export function createProtectedAreaServices(
 
   return {
     async bootstrap(date = now()) {
+      try {
+        await resumeFamilyWipe({ wipe })
+      } catch (error) {
+        if (error instanceof StorageGateError) {
+          return { kind: 'storage-blocked', reason: error.reason }
+        }
+        throw error
+      }
+
       const { profile, memory } = await getRepositorySet()
       try {
         await profile.open()
+        await resumeIndividualDeletions({ deletion: memory, mediaStore })
         // Save-operation reconciliation must run before any removal of
         // staging/cache media, so interrupted saves are recovered rather
         // than deleted as orphans.
@@ -292,7 +322,12 @@ export function createProtectedAreaServices(
     async hardDeleteMemory(id) {
       assertStorageAvailable()
       const { memory } = await getRepositorySet()
-      return deleteLocalMemory({ repository: memory, mediaStore }, id)
+      return deleteLocalMemory({ deletion: memory, mediaStore }, id)
+    },
+
+    async deleteAllFamilyContent() {
+      assertStorageAvailable()
+      return wipeAllFamilyContent({ wipe })
     },
 
     async startRecording() {
